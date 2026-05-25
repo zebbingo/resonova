@@ -171,6 +171,7 @@ class ConnectedDevice:
         self._fw = None
         self._connected = False
         self._simulating = False
+        self.session_id: Optional[str] = None
         self._lock = threading.Lock()
 
     @property
@@ -247,6 +248,7 @@ class ConnectedDevice:
                 mode=self.mode,
             )
             result.session_id = self._fw.session_id
+            self.session_id = self._fw.session_id
             logger.info("Session started: %s (%.2fs audio)", result.session_id, duration_sec)
 
             self._emit_session(result.session_id, "session_status", {
@@ -321,6 +323,7 @@ class ConnectedDevice:
         finally:
             with self._lock:
                 self._simulating = False
+                self.session_id = None  # clear cached session_id
 
         return result
 
@@ -330,6 +333,7 @@ class ConnectedDevice:
                 self._fw.stop_session(reason="manual_stop")
             except Exception:
                 pass
+        self.session_id = None
 
     def get_fw_status(self) -> dict:
         if self._fw:
@@ -359,7 +363,7 @@ class ConnectedDevice:
         self._emit_device("device_state", {"state": state.value})
 
     def _on_fw_mqtt_event(self, event_type: str, data: dict):
-        sid = self._fw.session_id if self._fw else None
+        sid = self.session_id
         if sid:
             self._emit_session(sid, event_type, data)
 
@@ -382,8 +386,7 @@ class ConnectedDevice:
             event["type"] = event_type
             event["timestamp"] = time.time()
             event["device_id"] = self.device_id
-            event["session_id"] = (self._fw.session_id
-                                   if self._fw and self._fw.session_id else "")
+            event["session_id"] = self.session_id or ""
             self.event_bus.publish(self.device_id, event)
 
     def _emit_session(self, session_id: str, event_type: str, data: dict):

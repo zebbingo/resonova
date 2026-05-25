@@ -119,7 +119,7 @@ MQTT broker → bot_mqtt.MQTTInputTransport
 
 ```bash
 # WSL — Process 1：stt-test-tool 后端
-export PYTHONPATH="/home/administrator/projects/chatbot/.venv/lib/python3.13/site-packages:/home/administrator/projects/chatbot/src"
+export PYTHONPATH="/home/administrator/chatbot-test/.venv/lib/python3.13/site-packages"
 cd /home/administrator/projects/stt-test-tool/backend
 nohup .venv/bin/python server.py &
 
@@ -129,7 +129,7 @@ PYTHONPATH="/home/administrator/projects/chatbot/src" nohup .venv/bin/python -m 
 
 # WSL — Process 3：bot_mqtt（音频处理，核心）
 cd /home/administrator/projects/chatbot
-PYTHONPATH="/home/administrator/projects/chatbot/src" nohup .venv/bin/python -m src.bot_mqtt &
+PYTHONPATH="/home/administrator/projects/chatbot/src" ZEBBIE_STUDIO_API_KEY="app-tfUY8CMnMpSlSeyuSN7kCz6b" nohup .venv/bin/python -m src.bot_mqtt &
 
 # Windows — 前端
 cd d:\zebbingo\projects\stt-test-tool-frontend
@@ -158,3 +158,53 @@ nohup .\node_modules\.bin\vite --host
 - [x] Round-trip 精度 ≤ 1/32768
 - [x] Opus 编解码 round-trip
 - [x] WAV 一致性断言（bad dtype / sr / channels）
+
+## 7. 集成测试验证结果（2026-05-25）
+
+### 7.1 全链路测试时序
+
+```
+[设备端]     [MQTT]          [bot_mqtt]            [ASR/LLM/TTS]
+  │            │                │                      │
+  ├─ session/start ───────────► │                      │
+  │            │                ├─ 角色查询 ZebFigurineInfo
+  │            │                ├─ StudioApiKey 验证    │
+  │            │                ├─ 订阅 session/audio/# │
+  │            │                │                      │
+  ├─ audio/1/start ──────────► │                      │
+  ├─ audio/1/chunk/1~27 ────► │                      │
+  ├─ audio/1/eos ───────────► │                      │
+  │            │                ├──► STT 识别           │
+  │            │                │   "Please skip..."    │
+  │            │                ├──► CommandIntentRouter │
+  │            │                │   → "next" 命令       │
+  │            │                ├──► LLM → TTS          │
+  │◄── response/audio/ ────────┤                      │
+  │◄── response/command/ ──────┤                      │
+  │            │                │                      │
+  ├─ session/end ────────────► │                      │
+```
+
+### 7.2 实测性能指标
+
+| 阶段 | 耗时 | 说明 |
+|:----|:----:|:-----|
+| 音频输入（1.61s WAV）→ Opus 编码 | 即时 | pcm_utils 格式正确 |
+| MQTT 传输 27 chunks | < 200ms | Opus 帧大小 60ms |
+| STT 识别（Sherpa ONNX） | ~1.6s | 句尾 VAD 超时自动截断 |
+| LLM + TTS 合成 | ~4s | 含 moderation |
+| 总耗时（1.61s 音频） | **16.62s** | ~10x 实时 |
+
+### 7.3 修复内容汇总
+
+| 问题 | 症状 | 根因 | 修复方式 |
+|:----|:----|:-----|:---------|
+| DB write error | `sqlalchemy.exc.OperationalError: Field 'DeviceId' doesn't have a default value` | ZebDeviceSerial 表中 DeviceId / IsDelete / DeviceMac 为 NOT NULL 无默认值 | `ALTER TABLE MODIFY COLUMN ... DEFAULT 0/'')` |
+| Studio API key 500 | `500: Studio API key not configured` | roman_centurion / gladiator_maximus 从 MongoDB 导入时缺 StudioAppId / StudioApiKey | ① 数据库补全数据 ② 代码层加 `ZEBBIE_STUDIO_API_KEY` 环境变量兜底 |
+| session_id 竞态 | `AttributeError: 'ConnectedDevice' object has no attribute 'session_id'` | MQTT 回调线程访问 `_fw.session_id` 时竞态，`_fw` 状态不一致 | `ConnectedDevice` 加缓存 `self.session_id`，回调读缓存 |
+
+### 7.4 已知约束
+
+- **角色 Studio 配置缺失无报警流程**：新增 figurine 后需手动补 `ZebFigurineInfo.StudioApiKey`，否则降级到 `ZEBBIE_STUDIO_API_KEY` 环境变量。建议以后在 admin 页面加校验。
+- **chatbot .venv 损坏后恢复**：35f9e79 后 `chatbot/.venv/lib/` 丢失。stt-test-tool 需引入 chatbot-test 或其他完整 venv 的 site-packages。
+- **shared subscription 依赖**：`bot_mqtt` 使用 `$share/sess-intake/` 共享订阅，确保 Mosquitto 配置允许共享订阅。
