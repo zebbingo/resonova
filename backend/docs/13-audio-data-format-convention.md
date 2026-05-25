@@ -40,7 +40,7 @@ pcm_int16 = pcm_utils.float32_to_int16(data)
 # int16 → float32
 pcm_float = pcm_utils.int16_to_float32(data)
 
-# dtype-aware 安全转换（接收 float32 / float64 / int16 均可）
+# dtype-aware 安全转换（接收 float32 / float64 / int16 / Python 标量 / list 均可）
 pcm_int16 = pcm_utils.to_int16_safe(data)
 
 # Opus 编解码
@@ -51,21 +51,89 @@ pcm_int16 = pcm_utils.decode_opus(opus_bytes)
 pcm_utils.assert_wav_consistent(data, sr=16000)
 ```
 
-## 4. 全链路数据流
+## 4. 部署架构与进程拓扑
+
+整个语音链路涉及 **3 个独立进程**（分布在 WSL 中）：
 
 ```
-WAV / mic (int16, 16kHz, mono)
-  → _load_wav() / sf.read()
-    → float32 [-1.0, 1.0]
-  → start_turn(pcm_data) / 业务方
-    → pcm_utils.to_int16_safe()  ← dtype-aware
-    → encoder.encode(int16_bytes, frame_size)
-    → Opus packet → MQTT publish
+┌─────────────────────────────────────────────────────────────────┐
+│  stt-test-tool (模拟设备端)                                      │
+│                                                                  │
+│  Process 1: server.py (Uvicorn :8765)                           │
+│    - HTTP API（角色列表、音频列表）                                │
+│    - WebSocket（设备状态、session 监控）                           │
+│    - 调用 mqtt_bridge.py 内部逻辑                                 │
+│      └─ _load_wav() → float32                                    │
+│      └─ DeviceFirmware.start_turn()                               │
+│           → pcm_utils.to_int16_safe()                             │
+│           → encoder.encode() → Opus packet                       │
+│           → MQTT publish (prod/<device>/request/audio/.../)      │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ MQTT broker (Mosquitto :1883)
+                           │
+┌──────────────────────────▼──────────────────────────────────────┐
+│  chatbot (服务端 — 两个独立进程)                                  │
+│                                                                  │
+│  Process 2: bot_runner.py (Uvicorn :7860)                      │
+│    - HTTP API（会话管理、账户查询等）                              │
+│    - MQTTDeviceManager 订阅:                                     │
+│      └─ prod/+/meta/#          ← 设备上下线                      │
+│      └─ prod/+/state/reported  ← 设备状态上报                    │
+│      └─ prod/+/ota/reported    ← OTA 上报                        │
+│    - 写入 ZebDeviceSerial（数据迁移修复后正常工作）                │
+│                                                                  │
+│  Process 3: bot_mqtt.py (独立启动)                              │
+│    - MQTTInputTransport 订阅:                                    │
+│      └─ $share/sess-intake/prod/+/request/session/+/start       │
+│         (共享订阅，发现新 session)                                │
+│      动态订阅（session 启动后）:                                   │
+│      └─ prod/<device>/request/session/<sid>/+    ← 会话控制      │
+│      └─ prod/<device>/request/audio/<sid>/#     ← 音频流         │
+│      └─ prod/<device>/request/command/<sid>/#   ← 指令          │
+│    - 处理 SESSION_START / CHUNK / EOS                            │
+│    - ASR (STT) → LLM → TTS → MQTT response 回推                 │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-MQTT receive → Opus packet
+**关键结论：** `bot_mqtt.py` 必须作为独立的第三个进程启动，`bot_runner` 本身不处理音频。
+
+### 全链路数据流（含格式细节）
+
+```
+模拟音频文件 (WAV int16 16kHz mono)
+  → mqtt_bridge._load_wav()
+    → sf.read() → float32 [-1.0, 1.0]                    ← 规范
+  → DeviceFirmware.start_turn(pcm_data)
+    → for each frame:
+        → pcm_utils.to_int16_safe()                      ← dtype-aware
+        → encoder.encode(int16_bytes, 960)
+        → MQTT publish: prod/<dev>/request/audio/<sid>/chunk/<seq>
+
+MQTT broker → bot_mqtt.MQTTInputTransport
   → decoder.decode() → int16 PCM
-  → int16_to_float32()  ← 若 STT 需要 float
-  → STT / ASR
+  → int16_to_float32()  (若 STT 需要 float)
+  → ASR / LLM / TTS → MQTT response 回推
+```
+
+### 启动命令速查
+
+```bash
+# WSL — Process 1：stt-test-tool 后端
+export PYTHONPATH="/home/administrator/projects/chatbot/.venv/lib/python3.13/site-packages:/home/administrator/projects/chatbot/src"
+cd /home/administrator/projects/stt-test-tool/backend
+nohup .venv/bin/python server.py &
+
+# WSL — Process 2：bot_runner（设备管理 + HTTP）
+cd /home/administrator/projects/chatbot
+PYTHONPATH="/home/administrator/projects/chatbot/src" nohup .venv/bin/python -m src.bot_runner &
+
+# WSL — Process 3：bot_mqtt（音频处理，核心）
+cd /home/administrator/projects/chatbot
+PYTHONPATH="/home/administrator/projects/chatbot/src" nohup .venv/bin/python -m src.bot_mqtt &
+
+# Windows — 前端
+cd d:\zebbingo\projects\stt-test-tool-frontend
+nohup .\node_modules\.bin\vite --host
 ```
 
 ## 5. 代码审查红线

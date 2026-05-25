@@ -359,8 +359,9 @@ class ConnectedDevice:
         self._emit_device("device_state", {"state": state.value})
 
     def _on_fw_mqtt_event(self, event_type: str, data: dict):
-        if self.session_id:
-            self._emit_session(self.session_id, event_type, data)
+        sid = self._fw.session_id if self._fw else None
+        if sid:
+            self._emit_session(sid, event_type, data)
 
     def _load_wav(self, wav_path: Path):
         import numpy as np

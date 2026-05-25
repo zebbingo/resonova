@@ -33,32 +33,36 @@ OPUS_FRAME_BYTES = OPUS_FRAME_SAMPLES * 2           # 每帧 PCM 字节数
 
 # ── 核心转换函数 ──────────────────────────────────────────────────────
 
-def int16_to_float32(x: np.ndarray) -> np.ndarray:
+def int16_to_float32(x) -> np.ndarray:
     """int16[-32768, 32767] → float32[-1.0, 1.0]
 
     规范依据: x.astype(np.float32) / 32768.0
+    接受 numpy ndarray、list 或 Python int 标量。
     """
-    return x.astype(np.float32) / PCM_SCALE_FACTOR
+    return np.asarray(x, dtype=np.int16).astype(np.float32) / PCM_SCALE_FACTOR
 
 
-def float32_to_int16(x: np.ndarray) -> np.ndarray:
+def float32_to_int16(x) -> np.ndarray:
     """float32[-1.0, 1.0] → int16[-32768, 32767]
 
     规范依据: (x * 32768).clip(-32768, 32767).astype(np.int16)
+    接受 numpy ndarray、list 或 Python float 标量。
     """
-    return (x * PCM_SCALE_FACTOR).clip(PCM_MIN_INT16, PCM_MAX_INT16).astype(np.int16)
+    return (np.asarray(x, dtype=np.float32) * PCM_SCALE_FACTOR).clip(PCM_MIN_INT16, PCM_MAX_INT16).astype(np.int16)
 
 
-def to_int16_safe(x: np.ndarray) -> np.ndarray:
+def to_int16_safe(x) -> np.ndarray:
     """Dtype-aware: 安全地将 float32/float64/int16 统一转为 int16
 
     等效于旧版 start_turn() 中的 dtype-aware 逻辑：
       - float32/float64: 按规范 *32768 + clip 转换
       - int16/其他整型: 类型保证后直接使用
+      - Python 标量 / list / ndarray: 先规范化为 ndarray 再处理
     """
-    if x.dtype in (np.float32, np.float64):
-        return float32_to_int16(x)
-    return np.asarray(x, dtype=np.int16)
+    arr = np.asarray(x)
+    if arr.dtype in (np.float32, np.float64):
+        return float32_to_int16(arr)
+    return arr.astype(np.int16)
 
 
 def encode_opus(pcm_int16: np.ndarray, frame_size: int = OPUS_FRAME_SAMPLES) -> bytes:
