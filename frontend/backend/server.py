@@ -1,1 +1,1 @@
-/mnt/d/zebbingo/projects/stt-test-tool/backend/server.py
+D:/zebbingo/projects/stt-test-tool/backend/server.py
