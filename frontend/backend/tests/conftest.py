@@ -1,4 +1,1 @@
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+/mnt/d/zebbingo/projects/stt-test-tool/backend/tests/conftest.py

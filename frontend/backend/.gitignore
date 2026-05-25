@@ -47,5 +47,7 @@ scripts/devices/
 mqtt-worker/
 db/
 
-# Exception: properly named test files
+# Exception: properly named test & audit files
 !tests/test_voicepipe.py
+!tests/test_pcm_utils.py
+!scripts/check_audio_convention.py

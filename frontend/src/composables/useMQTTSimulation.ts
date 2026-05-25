@@ -32,6 +32,12 @@ export interface STTMetrics {
   duration_sec: number
 }
 
+export interface SttResultData {
+  text: string
+  metrics: STTMetrics | null
+  duration_ms?: number
+}
+
 export interface TurnInfo {
   turnId: string
   type: 'user' | 'tts' | 'cue' | 'command'
@@ -136,7 +142,7 @@ export function useMQTTSimulation() {
   })
 
   const logs = ref<MQTTMessageLog[]>([])
-  const sttResult = ref<any>(null)
+  const sttResult = ref<SttResultData | null>(null)
   let ws: WebSocket | null = null
   let deviceWs: WebSocket | null = null
   let _deviceId: string = ''

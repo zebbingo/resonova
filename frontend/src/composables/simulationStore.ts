@@ -1,12 +1,12 @@
-import { reactive, computed } from 'vue'
-import type { MQTTMessageLog, TurnInfo, CommandInfo, DeviceSimulationState } from './useMQTTSimulation'
+import { reactive, computed, type Ref } from 'vue'
+import type { MQTTMessageLog, TurnInfo, CommandInfo, DeviceSimulationState, SttResultData } from './useMQTTSimulation'
 
 export interface SimulationEntry {
   deviceId: string
   figurineId: string
   mode: string
   logs: MQTTMessageLog[]
-  sttResult: any
+  sttResult: Ref<SttResultData | null>
   state: DeviceSimulationState
   isSimulating: boolean
   isConnected: boolean
@@ -37,7 +37,7 @@ export function registerSimulation(opts: {
   figurineId: string
   mode: string
   logsRef: any
-  sttResultRef: any
+  sttResultRef: Ref<SttResultData | null>
   state: any
   isSimulatingRef: any
   isConnectedRef?: any

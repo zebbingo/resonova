@@ -92,10 +92,7 @@ const _state = reactive<StateMachineData>({
 // ── 公开响应式计算属性 ──────────────────────────────────
 
 const deviceState: ComputedRef<DeviceState> = computed(() => _state.deviceState)
-const isOffline: ComputedRef<boolean> = computed(() => _state.deviceState === DeviceState.OFFLINE)
 const isConnecting: ComputedRef<boolean> = computed(() => _state.deviceState === DeviceState.CONNECTING)
-const isIdle: ComputedRef<boolean> = computed(() => _state.deviceState === DeviceState.IDLE)
-const isSessionActive: ComputedRef<boolean> = computed(() => _state.deviceState === DeviceState.SESSION_ACTIVE)
 
 const stateLabel: ComputedRef<string> = computed(() => {
   const labels: Record<string, string> = {
@@ -191,13 +188,8 @@ function setError(message: string) {
   _state.errorMessage = message
 }
 
-function reset() {
-  transitionTo(DeviceState.OFFLINE)
-}
-
 // ── 统计追踪 ────────────────────────────────────────────
 
-function incrementTurn() { _state.turnCount++ }
 function incrementSentChunks(n = 1) { _state.sentChunks += n }
 function incrementReceivedChunks(n = 1) { _state.receivedChunks += n }
 function incrementCommands(n = 1) { _state.commandCount += n }
@@ -216,18 +208,13 @@ export const deviceSM = {
   get commandCount() { return _state.commandCount },
 
   deviceState,
-  isOffline,
   isConnecting,
-  isIdle,
-  isSessionActive,
   stateLabel,
   stateColor,
   stateIcon,
 
   transitionTo,
   setError,
-  reset,
-  incrementTurn,
   incrementSentChunks,
   incrementReceivedChunks,
   incrementCommands,
