@@ -1,0 +1,2 @@
+GRANT ALL PRIVILEGES ON ZebbieDb.* TO 'chatbot'@'%';
+FLUSH PRIVILEGES;

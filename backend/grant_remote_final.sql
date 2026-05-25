@@ -1,0 +1,3 @@
+CREATE USER IF NOT EXISTS 'chatbot'@'%' IDENTIFIED BY 'chatbot123';
+GRANT ALL PRIVILEGES ON ZebbieDb.* TO 'chatbot'@'%';
+FLUSH PRIVILEGES;
