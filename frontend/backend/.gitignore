@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+.venv_old/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test artifacts
+tmp/
+build_out.txt
+audio_cache/
+simulation_history.json
+
+# Secrets
+.env
+user-config.env
+
+# Temp scripts
+_test_*.py
+_test_*.sh
+test_*.py
+test_*.sh
+debug_*.py
+check_*.py
+commands.yaml
+
+# Device configs (auto-generated)
+scripts/devices/
+
+# Workspace
+mqtt-worker/
+db/
+
+# Exception: properly named test files
+!tests/test_voicepipe.py
