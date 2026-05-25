@@ -4,3 +4,14 @@ dist/
 build_log.txt
 build_output.txt
 *.tsbuildinfo
+
+# Vite / 开发临时文件
+vite-dev.*.log
+
+# 设备历史记录（模拟数据）
+backend/scripts/devices/
+
+# 后端测试结果
+backend/*.txt
+backend/test_vc_result.txt
+backend/voice_chain_integration_test.py
