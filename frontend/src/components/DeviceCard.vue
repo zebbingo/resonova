@@ -42,6 +42,23 @@ const libraryAudios = ref<GeneratedVoice[]>([])
 const librarySearch = ref('')
 const loadingLibrary = ref(false)
 
+const RECENT_KEY = 'vpp_recent_audios'
+const recentAudios = ref<GeneratedVoice[]>([])
+
+function loadRecentAudios() {
+  try {
+    const raw = localStorage.getItem(RECENT_KEY)
+    if (raw) recentAudios.value = JSON.parse(raw)
+  } catch {}
+}
+
+function saveRecentAudio(audio: GeneratedVoice) {
+  recentAudios.value = recentAudios.value.filter(a => a.id !== audio.id)
+  recentAudios.value.unshift(audio)
+  if (recentAudios.value.length > 50) recentAudios.value = recentAudios.value.slice(0, 50)
+  localStorage.setItem(RECENT_KEY, JSON.stringify(recentAudios.value))
+}
+
 const {
   isSimulating,
   isConnected,
@@ -101,7 +118,10 @@ async function loadFigurines() {
   }
 }
 
-onMounted(() => { loadFigurines() })
+onMounted(() => {
+  loadRecentAudios()
+  loadFigurines()
+})
 
 const groupedAudios = computed(() => {
   const groups: { source: string; label: string; items: AudioItem[] }[] = []
@@ -253,6 +273,9 @@ async function handleStart() {
     })
 
     startAutoDerive()
+
+    const recent = ttsAudios.value.find(a => `tts/${a.id}` === audioId)
+    if (recent) saveRecentAudio(recent)
   } catch (err: any) {
     failStep('session', 'MQTT 会话启动', err.message || '启动失败')
   }
@@ -383,7 +406,15 @@ async function loadFigurineTTSAudios() {
   ttsAudioError.value = ''
   try {
     const resp = await fetchFigurineTTSAudios(figurineId.value)
-    ttsAudios.value = resp.records
+    const seen = new Set<number>()
+    const merged: GeneratedVoice[] = []
+    for (const a of recentAudios.value) {
+      if (!seen.has(a.id)) { seen.add(a.id); merged.push(a) }
+    }
+    for (const a of resp.records) {
+      if (!seen.has(a.id)) { seen.add(a.id); merged.push(a) }
+    }
+    ttsAudios.value = merged
   } catch (error: any) {
     console.error('加载 TTS 音频失败:', error)
     ttsAudioError.value = '加载 TTS 音频失败'
@@ -396,6 +427,11 @@ function onInlineGenerated(audioId: string) {
   selectedAudioId.value = audioId
   showInlineGenerator.value = false
   loadFigurineTTSAudios()
+  const idNum = parseInt(audioId.replace('tts/', ''), 10)
+  if (!isNaN(idNum)) {
+    const found = ttsAudios.value.find(a => a.id === idNum)
+    if (found) saveRecentAudio(found)
+  }
 }
 
 async function openLibraryBrowser() {
@@ -419,6 +455,9 @@ function closeLibraryBrowser() {
 function selectFromLibrary(audio: GeneratedVoice) {
   selectedAudioId.value = `tts/${audio.id}`
   closeLibraryBrowser()
+  if (!ttsAudios.value.find(a => a.id === audio.id)) {
+    ttsAudios.value.unshift(audio)
+  }
 }
 
 const filteredLibraryAudios = computed(() => {

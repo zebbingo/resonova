@@ -3,6 +3,7 @@ import { ref, computed, watch, nextTick } from 'vue'
 import { store } from '../composables/simulationStore'
 import type { TurnInfo, CommandInfo } from '../composables/useMQTTSimulation'
 import { flowStore, phaseStatus } from '../composables/chatFlowStore'
+import { deviceSM, DeviceState } from '../stores/deviceStateMachine'
 import SessionLog from './SessionLog.vue'
 import MetricsPanel from './MetricsPanel.vue'
 import InlineGenerator from './InlineGenerator.vue'
@@ -15,7 +16,7 @@ const hasSimulation = computed(() => store.active && entry.value !== null)
 const upCount = computed(() => entry.value?.logs?.filter(l => l.direction === 'up').length ?? 0)
 const downCount = computed(() => entry.value?.logs?.filter(l => l.direction === 'down').length ?? 0)
 
-const showV16Panel = ref(false)
+const showV16Panel = ref(true)
 const showGenerator = ref(false)
 
 const figurineId = computed(() => entry.value?.figurineId ?? '')
@@ -91,6 +92,18 @@ watch(
         <button class="btn-v16-toggle" :class="{ active: showV16Panel }" @click="showV16Panel = !showV16Panel" title="v1.6 详情">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
         </button>
+        <!-- 正式状态机展示 -->
+        <span
+          class="sm-badge"
+          :style="{ background: deviceSM.stateColor.value, color: '#fff' }"
+          :title="`DeviceState: ${deviceSM.deviceState}`"
+        >
+          {{ deviceSM.stateIcon.value }}
+          {{ deviceSM.stateLabel.value }}
+        </span>
+        <span v-if="deviceSM.sessionMode" class="sm-mode">
+          {{ modeLabel(deviceSM.sessionMode) }}
+        </span>
         <span class="status-dot" :class="entry!.status" />
         <span class="status-label" :class="entry!.status">
           {{ entry!.status === 'idle' ? '空闲' : entry!.status === 'connecting' ? '连接中' : entry!.status === 'active' ? '活跃' : entry!.status === 'capturing' ? '录音中' : entry!.status === 'playing' ? '播放中' : entry!.status === 'completed' ? '已完成' : entry!.status === 'error' ? '错误' : '未知' }}
@@ -104,9 +117,9 @@ watch(
         <div class="v16-col">
           <div class="v16-col-title">Turn ({{ entry!.activeTurns.length }})</div>
           <div v-if="entry!.activeTurns.length === 0" class="v16-empty">暂无</div>
-          <div v-for="turn in entry!.activeTurns.slice(-6).reverse()" :key="turn.turnId" class="v16-turn">
+          <div v-for="turn in entry!.activeTurns.slice(-6).reverse()" :key="turn.turnId" class="v16-turn" :class="turn.type === 'user' ? 'v16-turn--up' : 'v16-turn--down'">
             <span>{{ turnTypeIcon(turn.type) }}</span>
-            <span class="v16-turn-id">{{ turn.turnId }}</span>
+            <span class="v16-turn-id">{{ shortId(turn.turnId) }}</span>
             <span class="v16-turn-state">{{ turnStateIcon(turn.state) }} {{ turn.state }}</span>
             <span class="v16-turn-chunks">{{ turn.type === 'user' ? '↑' : '↓' }}{{ turn.type === 'user' ? turn.chunksSent : turn.chunksReceived }}</span>
           </div>
@@ -126,6 +139,26 @@ watch(
             <span>{{ cmdBadge(cmd) }}</span>
             <span class="v16-cmd-name">{{ cmd.cmd }}</span>
             <span v-if="cmd.turnId" class="v16-cmd-turn">{{ cmd.turnId }}</span>
+          </div>
+        </div>
+        <!-- ═══ 下行消息（音频下发）═══ -->
+        <div class="v16-col">
+          <div class="v16-col-title">
+            下行音频
+            <span class="downstream-badge">{{ entry!.activeTurns.filter(t => t.type !== 'user').length }}</span>
+          </div>
+          <div v-if="entry!.activeTurns.filter(t => t.type !== 'user').length === 0" class="v16-empty">暂无</div>
+          <div v-for="turn in entry!.activeTurns.filter(t => t.type !== 'user').slice(-5).reverse()" :key="turn.turnId" class="v16-turn v16-turn--down">
+            <span>{{ turnTypeIcon(turn.type) }}</span>
+            <span class="v16-turn-id">{{ shortId(turn.turnId) }}</span>
+            <span class="v16-turn-down-chunks">{{ turn.chunksReceived }} 帧</span>
+            <span v-if="turn.durationMs" class="v16-turn-down-dur">{{ fmtDuration(turn.durationMs) }}</span>
+            <span v-if="turn.state === 'playing'" class="v16-turn-down-pulse">▶ 播放中</span>
+            <span v-else-if="turn.state === 'done'" class="v16-turn-down-done">✓ 完成</span>
+          </div>
+          <!-- 下行统计 -->
+          <div class="v16-down-summary">
+            <span>总计: {{ entry!.activeTurns.filter(t => t.type !== 'user').reduce((s, t) => s + t.chunksReceived, 0) }} 帧</span>
           </div>
         </div>
       </div>
@@ -336,6 +369,22 @@ watch(
 .mode-chip {
   font-size: 0.72rem; color: var(--text2);
   background: var(--surface2); padding: 2px 8px; border-radius: 4px; font-weight: 500;
+}
+
+/* ── 正式设备状态机（DeviceState）展示 ── */
+.sm-badge {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 0.68rem; font-weight: 600; letter-spacing: 0.3px;
+  padding: 2px 8px; border-radius: 8px;
+  white-space: nowrap;
+  transition: background 0.3s ease;
+}
+.sm-mode {
+  font-size: 0.62rem; font-weight: 500;
+  color: var(--accent);
+  background: rgba(91, 141, 239, 0.12);
+  padding: 1px 6px; border-radius: 4px;
+  text-transform: uppercase;
 }
 
 .stat {
@@ -691,10 +740,13 @@ watch(
 
 .v16-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
   gap: 12px;
 }
-@media (max-width: 700px) {
+@media (max-width: 1000px) {
+  .v16-grid { grid-template-columns: 1fr 1fr; }
+}
+@media (max-width: 600px) {
   .v16-grid { grid-template-columns: 1fr; }
 }
 
@@ -719,6 +771,8 @@ watch(
 }
 .v16-turn-state { color: var(--text3); font-size: 0.68rem; }
 .v16-turn-chunks { color: var(--text3); font-size: 0.68rem; margin-left: auto; }
+.v16-turn--up { border-left: 2px solid var(--accent); padding-left: 4px; }
+.v16-turn--down { border-left: 2px solid var(--green); padding-left: 4px; border-color: var(--green) !important; }
 
 .v16-stt {
   display: flex; gap: 6px; padding: 3px 0;
@@ -739,6 +793,33 @@ watch(
 .v16-cmd.after { border-left: 2px solid #fbbf24; padding-left: 4px; }
 .v16-cmd-name { color: var(--text); font-weight: 600; }
 .v16-cmd-turn { color: var(--text3); font-size: 0.68rem; margin-left: auto; }
+
+/* ── 下行音频 ── */
+.downstream-badge {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 0.62rem; font-weight: 600;
+  background: var(--green); color: #fff;
+  min-width: 16px; height: 16px; border-radius: 8px;
+  margin-left: 4px; padding: 0 4px;
+  vertical-align: middle;
+}
+.v16-turn--down { border-left: 2px solid var(--green); padding-left: 4px; }
+.v16-turn-down-chunks { color: var(--text3); font-size: 0.68rem; }
+.v16-turn-down-dur { color: var(--accent); font-size: 0.65rem; font-weight: 500; }
+.v16-turn-down-pulse {
+  color: var(--orange); font-size: 0.62rem;
+  animation: v16-pulse 1.2s ease-in-out infinite; margin-left: auto;
+}
+.v16-turn-down-done { color: var(--green); font-size: 0.62rem; margin-left: auto; }
+.v16-down-summary {
+  margin-top: 6px; padding-top: 4px;
+  border-top: 1px solid var(--border);
+  font-size: 0.68rem; color: var(--text2); font-weight: 500;
+}
+@keyframes v16-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
 
 /* ── TTS 生成器 ── */
 .generator-section {

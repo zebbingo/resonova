@@ -1,5 +1,6 @@
 import { ref, reactive } from 'vue'
 import axios from 'axios'
+import { deviceSM, DeviceState, SessionMode } from '../stores/deviceStateMachine'
 
 export type MQTTMessageType =
   | 'session_start' | 'session_end' | 'session_hb'
@@ -165,6 +166,13 @@ export function useMQTTSimulation() {
   async function connectDevice(config: { deviceId: string; figurineId: string; mode: string }) {
     isConnecting.value = true
     _deviceId = config.deviceId
+
+    // 状态机：OFFLINE → CONNECTING
+    deviceSM.transitionTo(DeviceState.CONNECTING, {
+      deviceId: config.deviceId,
+      figurineId: config.figurineId,
+    })
+
     try {
       await axios.post('/api/device/connect', {
         device_id: config.deviceId,
@@ -174,6 +182,9 @@ export function useMQTTSimulation() {
       state.isOnline = true
       state.status = 'active'
       isConnected.value = true
+
+      // 状态机：CONNECTING → IDLE
+      deviceSM.transitionTo(DeviceState.IDLE)
       addLog('up', 'device/power_on', { device_id: config.deviceId }, 'session_start')
 
       const wsUrl = `ws://${window.location.host}/ws/device/${config.deviceId}`
@@ -190,12 +201,15 @@ export function useMQTTSimulation() {
           state.isOnline = false
           if (state.status === 'active' || state.status === 'idle') {
             state.status = 'idle'
+            // 状态机：异常断开 → OFFLINE
+            deviceSM.transitionTo(DeviceState.OFFLINE)
           }
         }
       }
     } catch (error: any) {
       state.errorMessage = error.response?.data?.error || error.message
       state.status = 'error'
+      deviceSM.setError(state.errorMessage)
     } finally {
       isConnecting.value = false
     }
@@ -214,6 +228,9 @@ export function useMQTTSimulation() {
     state.status = 'idle'
     state.heartbeatActive = false
     state.sessionId = undefined
+
+    // 状态机：IDLE → OFFLINE
+    deviceSM.transitionTo(DeviceState.OFFLINE)
   }
 
   async function startSimulation(config: SimulationConfig) {
@@ -231,6 +248,13 @@ export function useMQTTSimulation() {
     state.configStatus = { ver: 0, status: 'idle' }
     logs.value = []
     sttResult.value = null
+
+    // 状态机：IDLE → SESSION_ACTIVE
+    deviceSM.transitionTo(DeviceState.SESSION_ACTIVE, {
+      sessionMode: config.mode as SessionMode,
+      figurineId: config.figurineId,
+      deviceId: config.deviceId,
+    })
 
     try {
       const resp = await axios.post('/api/device/simulate', {
@@ -273,6 +297,7 @@ export function useMQTTSimulation() {
       ws.onerror = () => {
         state.errorMessage = 'WebSocket 连接错误'
         state.status = 'error'
+        deviceSM.setError(state.errorMessage)
       }
 
       ws.onclose = () => {
@@ -291,6 +316,7 @@ export function useMQTTSimulation() {
       state.errorMessage = error.response?.data?.detail || error.message
       state.status = 'error'
       isSimulating.value = false
+      deviceSM.setError(state.errorMessage)
     }
   }
 
@@ -317,6 +343,8 @@ export function useMQTTSimulation() {
       case 'session_complete':
         state.status = 'completed'
         state.isOnline = false
+        // 状态机：会话完成 → SESSION_ENDED
+        deviceSM.transitionTo(DeviceState.SESSION_ENDED)
         addLog('down', 'Session Complete', {}, 'session_end')
         break
 
@@ -381,6 +409,8 @@ export function useMQTTSimulation() {
           state.currentTurn++
           const tid = extractedTurnId || String(state.currentTurn)
           _upsertTurn(tid, 'user', { state: 'uploading', chunksSent: 0, startTime: new Date() })
+          // 状态机：开始上行录音 → CAPTURING（可从 SESSION_ACTIVE 或 WAITING 进入）
+          deviceSM.transitionTo(DeviceState.CAPTURING)
           addLog('up', topic, payload, 'audio_start', tid)
         } else {
           const tid = extractedTurnId || 'tts'
@@ -406,6 +436,8 @@ export function useMQTTSimulation() {
             const turn = _findTurn(extractedTurnId)
             if (turn) turn.chunksReceived++
           }
+          // 状态机追踪下行 chunk
+          deviceSM.incrementReceivedChunks()
           addLog('down', topic, payload, 'audio_chunk', extractedTurnId)
         }
         break
@@ -417,6 +449,8 @@ export function useMQTTSimulation() {
             _upsertTurn(extractedTurnId, 'user', { state: 'thinking', endTime: new Date() })
           }
           state.status = 'active'
+          // 状态机：上行音频结束 → WAITING
+          deviceSM.transitionTo(DeviceState.WAITING)
           addLog('up', topic, payload, 'eos', extractedTurnId)
         } else {
           if (extractedTurnId) {
@@ -475,6 +509,8 @@ export function useMQTTSimulation() {
         }
         state.commands.push(cmdInfo)
         if (state.commands.length > MAX_COMMANDS) state.commands.shift()
+        // 状态机追踪指令
+        deviceSM.incrementCommands()
         addLog('down', topic, payload, cmdInfo.preempt ? 'command_preempt' : 'command', extractedTurnId)
         break
 
@@ -543,11 +579,17 @@ export function useMQTTSimulation() {
     }
     isSimulating.value = false
     state.heartbeatActive = false
+    // 状态机：先走到 SESSION_ENDED（兼容 CAPTURING / WAITING / SESSION_ACTIVE）
+    deviceSM.transitionTo(DeviceState.SESSION_ENDED)
     if (isConnected.value) {
       state.status = 'active'
+      // 状态机：SESSION_ENDED → IDLE（设备仍在线）
+      deviceSM.transitionTo(DeviceState.IDLE)
     } else {
       state.isOnline = false
       state.status = 'idle'
+      // 状态机：IDLE → OFFLINE
+      deviceSM.transitionTo(DeviceState.OFFLINE)
     }
     state.sessionId = undefined
     addLog('up', 'Manual Stop', {}, 'session_end')

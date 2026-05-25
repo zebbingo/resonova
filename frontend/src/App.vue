@@ -6,10 +6,12 @@ import DeviceManager from './components/DeviceManager.vue'
 import VoiceGenerator from './components/VoiceGenerator.vue'
 import GeneratedVoiceList from './components/GeneratedVoiceList.vue'
 import SimulationFlow from './components/SimulationFlow.vue'
+import CommandMonitor from './components/CommandMonitor.vue'
+import CommandManager from './components/CommandManager.vue'
 import { flowStore } from './composables/chatFlowStore'
 
 // ── Tab 切换 ──
-type Tab = 'mqtt' | 'tts-generator' | 'tts-list'
+type Tab = 'mqtt' | 'tts-generator' | 'tts-list' | 'command-monitor' | 'command-manager'
 const activeTab = ref<Tab>('mqtt')
 
 // ── 状态 ──
@@ -59,6 +61,14 @@ function onReuseParams(params: any) {
         :class="{ active: activeTab === 'tts-list' }"
         @click="activeTab = 'tts-list'"
       >💾 已生成语音</button>
+      <button
+        :class="{ active: activeTab === 'command-monitor' }"
+        @click="activeTab = 'command-monitor'"
+      >📟 指令拦截监控</button>
+      <button
+        :class="{ active: activeTab === 'command-manager' }"
+        @click="activeTab = 'command-manager'"
+      >📋 指令管理</button>
     </nav>
 
     <!-- MQTT 模拟 Tab -->
@@ -136,6 +146,16 @@ function onReuseParams(params: any) {
     <div v-if="activeTab === 'tts-list'" class="tts-layout">
       <GeneratedVoiceList @reuse-params="onReuseParams" />
     </div>
+
+    <!-- 指令拦截监控 Tab -->
+    <div v-if="activeTab === 'command-monitor'" class="monitor-layout">
+      <CommandMonitor />
+    </div>
+
+    <!-- 指令管理 Tab -->
+    <div v-if="activeTab === 'command-manager'" class="manager-layout">
+      <CommandManager />
+    </div>
   </div>
 </template>
 
@@ -196,6 +216,18 @@ header h1 { font-size: 1.6rem; font-weight: 700; }
 .tts-layout > * {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 20px;
+}
+
+/* ── 指令拦截监控 ── */
+.monitor-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+}
+
+/* ── 指令管理 ── */
+.manager-layout {
+  display: grid;
+  grid-template-columns: 1fr;
 }
 
 /* ── 主区 ── */

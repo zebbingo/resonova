@@ -8,11 +8,11 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': {
-        target: 'http://localhost:8765',
+        target: 'http://192.168.52.134:8765',
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://localhost:8765',
+        target: 'ws://192.168.52.134:8765',
         ws: true,
       },
     },
