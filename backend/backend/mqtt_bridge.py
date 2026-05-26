@@ -47,6 +47,7 @@ OPUS_CHANNELS = pcm_utils.PCM_CHANNELS
 OPUS_FRAME_MS = pcm_utils.OPUS_FRAME_MS
 OPUS_FRAME_SAMPLES = pcm_utils.OPUS_FRAME_SAMPLES
 OPUS_FRAME_BYTES = pcm_utils.OPUS_FRAME_BYTES
+DEFAULT_MQTT_BROKER_PROFILE = os.getenv("MQTT_BROKER_PROFILE", "local")
 
 
 @dataclass
@@ -105,6 +106,93 @@ def _resolve_mqtt_host() -> str:
     return "localhost"
 
 
+def _resolve_local_mqtt_host() -> str:
+    """Resolve the local broker host without reading the generic MQTT_HOST env.
+
+    Local test mode should prefer the workspace broker (WSL Mosquitto / localhost),
+    while still supporting the Windows-to-WSL bridge pattern used by the test rig.
+    """
+    if sys.platform == "win32":
+        try:
+            import subprocess
+
+            result = subprocess.run(
+                ["wsl", "hostname", "-I"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if result.returncode == 0:
+                wsl_ip = result.stdout.strip().split()[0]
+                if wsl_ip:
+                    return wsl_ip
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            pass
+    return "localhost"
+
+
+def _resolve_mqtt_port() -> int:
+    raw = os.getenv("MQTT_PORT", "1883")
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 1883
+
+
+def _resolve_mqtt_env() -> str:
+    return os.getenv("MQTT_ENV", "development")
+
+
+def _resolve_mqtt_tls() -> bool:
+    raw = os.getenv("MQTT_TLS", "false")
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_mqtt_profile(raw_profile: str | None) -> str:
+    profile = (raw_profile or DEFAULT_MQTT_BROKER_PROFILE or "local").strip().lower()
+    if profile in {"local", "relay", "custom"}:
+        return profile
+    return "local"
+
+
+def _resolve_broker_config(
+    *,
+    mqtt_profile: str | None = None,
+    mqtt_env: str | None = None,
+    mqtt_host: str | None = None,
+    mqtt_port: int | None = None,
+    mqtt_tls: bool | None = None,
+) -> tuple[str, str, str, int, bool]:
+    profile = _resolve_mqtt_profile(mqtt_profile)
+
+    if profile == "local":
+        env = mqtt_env or "development"
+        host = mqtt_host or _resolve_local_mqtt_host()
+        port = mqtt_port if mqtt_port is not None else 1883
+        tls = False if mqtt_tls is None else bool(mqtt_tls)
+        return profile, env, host, port, tls
+
+    if profile == "relay":
+        env = mqtt_env or os.getenv("MQTT_RELAY_ENV", "development")
+        host = mqtt_host or os.getenv("MQTT_RELAY_HOST") or _resolve_mqtt_host()
+        port = mqtt_port if mqtt_port is not None else int(os.getenv("MQTT_RELAY_PORT", str(_resolve_mqtt_port())))
+        tls_raw = os.getenv("MQTT_RELAY_TLS")
+        if mqtt_tls is None:
+            if tls_raw is None:
+                tls = _resolve_mqtt_tls()
+            else:
+                tls = str(tls_raw).strip().lower() in {"1", "true", "yes", "on"}
+        else:
+            tls = bool(mqtt_tls)
+        return profile, env, host, port, tls
+
+    env = mqtt_env or _resolve_mqtt_env()
+    host = mqtt_host or _resolve_mqtt_host()
+    port = mqtt_port if mqtt_port is not None else _resolve_mqtt_port()
+    tls = _resolve_mqtt_tls() if mqtt_tls is None else bool(mqtt_tls)
+    return profile, env, host, port, tls
+
+
 class SimulationEventBus:
     def __init__(self):
         self._queues: dict[str, queue.Queue] = {}
@@ -154,9 +242,11 @@ class ConnectedDevice:
         mode: str = "dialogue",
         *,
         nfc_id: str = "sim-nfc",
+        broker_profile: str = "local",
         env: str = "development",
         broker_host: str = "localhost",
         broker_port: int = 1883,
+        broker_tls: bool = False,
         subscribe_response: bool = False,
         speed: float = 0,
         event_bus: Optional[SimulationEventBus] = None,
@@ -165,9 +255,11 @@ class ConnectedDevice:
         self.figurine_id = figurine_id
         self.mode = mode
         self.nfc_id = nfc_id
+        self.broker_profile = broker_profile
         self.env = env
         self.broker_host = broker_host
         self.broker_port = broker_port
+        self.broker_tls = broker_tls
         self.subscribe_response = subscribe_response
         self.speed = speed
         self.event_bus = event_bus
@@ -243,6 +335,7 @@ class ConnectedDevice:
             env=self.env,
             broker_host=self.broker_host,
             broker_port=self.broker_port,
+            tls_enabled=self.broker_tls,
             on_mqtt_event=self._on_fw_mqtt_event,
         )
         self._fw.on_log = self._on_fw_log
@@ -250,7 +343,14 @@ class ConnectedDevice:
         self._fw.on_cue_audio = self._on_fw_cue
         self._fw.on_state_change = self._on_fw_state_change
 
-        self._emit_device("mqtt_connecting", {"broker": f"{self.broker_host}:{self.broker_port}"})
+        self._emit_device(
+            "mqtt_connecting",
+            {
+                "broker": f"{self.broker_host}:{self.broker_port}",
+                "tls": self.broker_tls,
+                "profile": self.broker_profile,
+            },
+        )
         self._fw.power_on()
         self._connected = True
         self._emit_device("mqtt_connected", {"rc": 0})
@@ -294,7 +394,14 @@ class ConnectedDevice:
         result.total_chunks = chunks
         result.send_duration_sec = max(duration_sec, 0.01)
 
-        self._emit_device("mqtt_connecting", {"broker": f"{self.broker_host}:{self.broker_port}"})
+        self._emit_device(
+            "mqtt_connecting",
+            {
+                "broker": f"{self.broker_host}:{self.broker_port}",
+                "tls": self.broker_tls,
+                "profile": self.broker_profile,
+            },
+        )
         self._emit_device("mqtt_connected", {"rc": 0})
         self._emit_device("device_state", {"state": "idle"})
         self._emit_session(session_id, "session_status", {"status": "active", "session_id": session_id})
@@ -567,14 +674,57 @@ class SimulationManager:
         mode: str = "dialogue",
         *,
         nfc_id: str = "sim-nfc",
+        mqtt_profile: str | None = None,
+        mqtt_env: str | None = None,
+        mqtt_host: str | None = None,
+        mqtt_port: int | None = None,
+        mqtt_tls: bool | None = None,
     ) -> dict:
         """Connect a device (power_on). Device stays online for multiple sessions."""
+        resolved_profile, resolved_env, resolved_host, resolved_port, resolved_tls = _resolve_broker_config(
+            mqtt_profile=mqtt_profile,
+            mqtt_env=mqtt_env,
+            mqtt_host=mqtt_host,
+            mqtt_port=mqtt_port,
+            mqtt_tls=mqtt_tls,
+        )
+
         with self._lock:
             if device_id in self._devices:
                 dev = self._devices[device_id]
                 if dev.is_connected:
-                    return {"device_id": device_id, "status": "already_connected"}
-            if len(self._devices) >= self.MAX_DEVICES:
+                    same_broker = (
+                        dev.broker_profile == resolved_profile
+                        and dev.env == resolved_env
+                        and dev.broker_host == resolved_host
+                        and dev.broker_port == resolved_port
+                        and dev.broker_tls == resolved_tls
+                    )
+                    if same_broker:
+                        return {"device_id": device_id, "status": "already_connected"}
+                    self._threads.pop(device_id, None)
+                    try:
+                        dev.power_off()
+                    except Exception:
+                        pass
+                    self.event_bus.remove_queue(device_id)
+                    self._devices.pop(device_id, None)
+                if len(self._devices) >= self.MAX_DEVICES:
+                    idle_device_id = next(
+                        (did for did, candidate in self._devices.items() if not candidate.is_simulating),
+                        None,
+                    )
+                    if idle_device_id is not None:
+                        idle_dev = self._devices.pop(idle_device_id)
+                        self._threads.pop(idle_device_id, None)
+                        try:
+                            idle_dev.power_off()
+                        except Exception:
+                            pass
+                        self.event_bus.remove_queue(idle_device_id)
+                    if len(self._devices) >= self.MAX_DEVICES:
+                        raise ValueError(f"Max {self.MAX_DEVICES} concurrent devices")
+            elif len(self._devices) >= self.MAX_DEVICES:
                 idle_device_id = next(
                     (did for did, candidate in self._devices.items() if not candidate.is_simulating),
                     None,
@@ -597,9 +747,11 @@ class SimulationManager:
             figurine_id=figurine_id,
             mode=mode,
             nfc_id=nfc_id,
-            env=os.getenv("MQTT_ENV", "development"),
-            broker_host=_resolve_mqtt_host(),
-            broker_port=int(os.getenv("MQTT_PORT", "1883")),
+            broker_profile=resolved_profile,
+            env=resolved_env,
+            broker_host=resolved_host,
+            broker_port=resolved_port,
+            broker_tls=resolved_tls,
             event_bus=self.event_bus,
         )
 
@@ -616,6 +768,11 @@ class SimulationManager:
             "status": "connected",
             "figurine_id": figurine_id,
             "mode": mode,
+            "mqtt_profile": resolved_profile,
+            "mqtt_env": resolved_env,
+            "mqtt_host": resolved_host,
+            "mqtt_port": resolved_port,
+            "mqtt_tls": resolved_tls,
         }
 
     def disconnect_device(self, device_id: str) -> dict:
@@ -721,6 +878,11 @@ class SimulationManager:
             "device_id": device_id,
             "connected": dev.is_connected,
             "simulating": dev.is_simulating,
+            "mqtt_profile": dev.broker_profile,
+            "mqtt_env": dev.env,
+            "mqtt_host": dev.broker_host,
+            "mqtt_port": dev.broker_port,
+            "mqtt_tls": dev.broker_tls,
             "fw_status": fw,
         }
 
@@ -737,6 +899,11 @@ class SimulationManager:
                     "simulating": dev.is_simulating,
                     "figurine_id": dev.figurine_id,
                     "mode": dev.mode,
+                    "mqtt_profile": dev.broker_profile,
+                    "mqtt_env": dev.env,
+                    "mqtt_host": dev.broker_host,
+                    "mqtt_port": dev.broker_port,
+                    "mqtt_tls": dev.broker_tls,
                 }
                 for did, dev in self._devices.items()
             ]
@@ -809,8 +976,21 @@ class SimulationManager:
         nfc_id: str = "sim-nfc",
         subscribe_response: bool = False,
         speed: float = 0,
+        mqtt_profile: str | None = None,
+        mqtt_env: str | None = None,
+        mqtt_host: str | None = None,
+        mqtt_port: int | None = None,
+        mqtt_tls: bool | None = None,
     ) -> str:
         """Legacy API: connect + run in one shot (for backward compatibility)."""
+        resolved_profile, resolved_env, resolved_host, resolved_port, resolved_tls = _resolve_broker_config(
+            mqtt_profile=mqtt_profile,
+            mqtt_env=mqtt_env,
+            mqtt_host=mqtt_host,
+            mqtt_port=mqtt_port,
+            mqtt_tls=mqtt_tls,
+        )
+
         with self._lock:
             dev = self._devices.get(device_id)
             if dev and dev.is_connected and dev.is_simulating:
@@ -824,8 +1004,30 @@ class SimulationManager:
             else:
                 raise ValueError(f"Device {device_id} already has an active simulation")
 
+            if dev is not None and dev.is_connected:
+                needs_reconnect = (
+                    dev.broker_profile != resolved_profile
+                    or dev.env != resolved_env
+                    or dev.broker_host != resolved_host
+                    or dev.broker_port != resolved_port
+                    or dev.broker_tls != resolved_tls
+                )
+            if needs_reconnect:
+                self.disconnect_device(device_id)
+                dev = None
+
         if dev is None or not dev.is_connected:
-            self.connect_device(device_id, figurine_id, mode, nfc_id=nfc_id)
+            self.connect_device(
+                device_id,
+                figurine_id,
+                mode,
+                nfc_id=nfc_id,
+                mqtt_profile=resolved_profile,
+                mqtt_env=resolved_env,
+                mqtt_host=resolved_host,
+                mqtt_port=resolved_port,
+                mqtt_tls=resolved_tls,
+            )
 
         return self.run_simulation(
             device_id=device_id,
