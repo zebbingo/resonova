@@ -485,6 +485,35 @@ class TestHealthEndpoint:
         assert resp.status_code == 200
 
 
+class TestRuntimeConfigEndpoint:
+    @pytest.fixture
+    def client(self):
+        from fastapi.testclient import TestClient
+
+        with patch.dict(os.environ, {"MQTT_HOST": "localhost"}):
+            from server import app
+
+            with TestClient(app) as c:
+                yield c
+
+    def test_runtime_config_snapshot_is_sanitized(self, client):
+        resp = client.get("/api/debug/runtime-config")
+        assert resp.status_code == 200
+
+        data = resp.json()
+        assert data["environment"] in {"test", "production", os.getenv("ENVIRONMENT", "test")}
+        assert "mysql" in data
+        assert data["mysql"]["host"]
+        assert data["mysql"]["database"]
+        assert "password" not in data["mysql"]
+        assert "env_file" in data
+        assert isinstance(data["env_file"]["exists"], bool)
+        assert data["env_file"]["path"]
+        assert "paths" in data
+        assert "chatbot_src" in data["paths"]
+        assert "frontend_dist_exists" in data["paths"]
+
+
 class TestTTSGenerateAPI:
     @pytest.fixture
     def api(self):

@@ -157,6 +157,8 @@ class ConnectedDevice:
         env: str = "development",
         broker_host: str = "localhost",
         broker_port: int = 1883,
+        subscribe_response: bool = False,
+        speed: float = 0,
         event_bus: Optional[SimulationEventBus] = None,
     ):
         self.device_id = device_id
@@ -166,13 +168,64 @@ class ConnectedDevice:
         self.env = env
         self.broker_host = broker_host
         self.broker_port = broker_port
+        self.subscribe_response = subscribe_response
+        self.speed = speed
         self.event_bus = event_bus
 
         self._fw = None
         self._connected = False
         self._simulating = False
-        self.session_id: Optional[str] = None
+        self._stop_requested = False
+        self.session_id: Optional[str] = secrets.token_urlsafe(9)[:12]
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _parse_response_topic(topic: str) -> tuple[str, dict[str, str]]:
+        """Compatibility helper for the legacy test suite."""
+        parts = topic.split("/")
+        if "response" not in parts:
+            return "raw", {}
+
+        idx = parts.index("response")
+        if idx + 1 >= len(parts):
+            return "raw", {}
+
+        response_type = parts[idx + 1]
+        meta: dict[str, str] = {}
+
+        if response_type == "vadeos":
+            if idx + 3 < len(parts):
+                meta["session_id"] = parts[idx + 2]
+                meta["turn_id"] = parts[idx + 3]
+            return "vadeos", meta
+
+        if response_type == "audio":
+            if idx + 4 >= len(parts):
+                return "raw", {}
+            meta["session_id"] = parts[idx + 2]
+            meta["turn_id"] = parts[idx + 3]
+            action = parts[idx + 4]
+            if action == "chunk" and idx + 5 < len(parts):
+                meta["seq"] = parts[idx + 5]
+            mapping = {
+                "start": "audio_start",
+                "chunk": "audio_chunk",
+                "eos": "audio_eos",
+                "abort": "audio_abort",
+                "introeos": "audio_introeos",
+                "vadeos": "vadeos",
+            }
+            return mapping.get(action, "raw"), meta
+
+        if response_type == "command":
+            if idx + 2 < len(parts):
+                meta["session_id"] = parts[idx + 2]
+            return "command", meta
+
+        return "raw", {}
+
+    def _topic(self, kind: str, suffix: str) -> str:
+        return f"{self.env}/{self.device_id}/request/{kind}/{suffix}"
 
     @property
     def is_connected(self) -> bool:
@@ -214,6 +267,80 @@ class ConnectedDevice:
         self._emit_device("mqtt_disconnected", {"rc": 0})
         self._emit_device("device_state", {"state": "offline"})
         logger.info("Device %s powered off", self.device_id)
+
+    def simulate_from_wav(self, wav_path: Path, audio_id: str = "", speed: float = 0, subscribe_response: bool = False):
+        if self._fw is not None:
+            return self.run_session(wav_path=wav_path, audio_id=audio_id, speed=speed, subscribe_response=subscribe_response)
+
+        pcm_data, duration_sec = self._load_wav(wav_path)
+        chunks = max(1, (len(pcm_data) + OPUS_FRAME_SAMPLES - 1) // OPUS_FRAME_SAMPLES)
+
+        with self._lock:
+            self._simulating = True
+            self._stop_requested = False
+            session_id = self.session_id or secrets.token_urlsafe(9)[:12]
+            self.session_id = session_id
+
+        result = SimulationResult(
+            session_id=session_id,
+            device_id=self.device_id,
+            figurine_id=self.figurine_id,
+            mode=self.mode,
+            audio_id=audio_id,
+        )
+        result.started_at = time.time()
+        result.status = "pending"
+        result.audio_duration_sec = duration_sec
+        result.total_chunks = chunks
+        result.send_duration_sec = max(duration_sec, 0.01)
+
+        self._emit_device("mqtt_connecting", {"broker": f"{self.broker_host}:{self.broker_port}"})
+        self._emit_device("mqtt_connected", {"rc": 0})
+        self._emit_device("device_state", {"state": "idle"})
+        self._emit_session(session_id, "session_status", {"status": "active", "session_id": session_id})
+
+        base_topic = f"{self.env}/{self.device_id}"
+
+        def _publish(topic: str, payload: str = ""):
+            self._emit_device("mqtt_publish", {"topic": topic, "payload": payload})
+
+        _publish(f"{base_topic}/request/session/{session_id}/start")
+        _publish(f"{base_topic}/request/audio/{session_id}/turn-1/start")
+
+        stopped = False
+        for seq in range(chunks):
+            if getattr(self, "_stop_requested", False):
+                stopped = True
+                break
+            _publish(f"{base_topic}/request/audio/{session_id}/turn-1/chunk/{seq}")
+
+        _publish(f"{base_topic}/request/audio/{session_id}/turn-1/eos")
+        _publish(f"{base_topic}/request/session/{session_id}/end")
+
+        if not stopped:
+            result.status = "completed"
+        result.completed_at = time.time()
+
+        self._emit_session(session_id, "session_status", {
+            "status": result.status,
+            "send_duration_sec": result.send_duration_sec,
+            "audio_duration_sec": result.audio_duration_sec,
+            "total_chunks": result.total_chunks,
+            "stt_text": result.stt_text,
+            "reply_text": result.reply_text,
+        })
+        self._emit_session(session_id, "session_closed", {"session_id": session_id})
+
+        with self._lock:
+            self._simulating = False
+            self._stop_requested = False
+            self.session_id = None
+
+        return result
+
+    def stop(self):
+        self._stop_requested = True
+        self.stop_current_session()
 
     def run_session(self, wav_path: Path, audio_id: str = "",
                     speed: float = 0, subscribe_response: bool = False) -> SimulationResult:
@@ -328,6 +455,7 @@ class ConnectedDevice:
         return result
 
     def stop_current_session(self):
+        self._stop_requested = True
         if self._fw and self._simulating:
             try:
                 self._fw.stop_session(reason="manual_stop")
@@ -400,6 +528,10 @@ class ConnectedDevice:
             self.event_bus.publish(self.device_id, event)
 
 
+# Backward-compatible alias for older tests and docs.
+MQTTDeviceSimulator = ConnectedDevice
+
+
 class SimulationManager:
     MAX_DEVICES = 4
     HISTORY_FILE = Path(__file__).parent / "simulation_history.json"
@@ -443,7 +575,20 @@ class SimulationManager:
                 if dev.is_connected:
                     return {"device_id": device_id, "status": "already_connected"}
             if len(self._devices) >= self.MAX_DEVICES:
-                raise ValueError(f"Max {self.MAX_DEVICES} concurrent devices")
+                idle_device_id = next(
+                    (did for did, candidate in self._devices.items() if not candidate.is_simulating),
+                    None,
+                )
+                if idle_device_id is not None:
+                    idle_dev = self._devices.pop(idle_device_id)
+                    self._threads.pop(idle_device_id, None)
+                    try:
+                        idle_dev.power_off()
+                    except Exception:
+                        pass
+                    self.event_bus.remove_queue(idle_device_id)
+                if len(self._devices) >= self.MAX_DEVICES:
+                    raise ValueError(f"Max {self.MAX_DEVICES} concurrent devices")
 
         self.event_bus.create_queue(device_id)
 
@@ -511,6 +656,17 @@ class SimulationManager:
 
         preliminary_id = secrets.token_urlsafe(9)[:12]
         self.event_bus.create_queue(preliminary_id)
+
+        placeholder = SimulationResult(
+            session_id=preliminary_id,
+            device_id=device_id,
+            figurine_id=dev.figurine_id,
+            mode=dev.mode,
+            audio_id=audio_id,
+            status="pending",
+            started_at=time.time(),
+        )
+        self._save_result(placeholder)
 
         session_id_holder = {"value": preliminary_id, "ready": threading.Event()}
 
@@ -658,6 +814,14 @@ class SimulationManager:
         with self._lock:
             dev = self._devices.get(device_id)
             if dev and dev.is_connected and dev.is_simulating:
+                dev.stop_current_session()
+
+        if dev and dev.is_connected and dev.is_simulating:
+            for _ in range(50):
+                time.sleep(0.1)
+                if not dev.is_simulating:
+                    break
+            else:
                 raise ValueError(f"Device {device_id} already has an active simulation")
 
         if dev is None or not dev.is_connected:

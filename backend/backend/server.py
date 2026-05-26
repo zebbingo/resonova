@@ -3,11 +3,13 @@
 
 import asyncio
 import base64
+import importlib.util
 import json
 import logging
 import os
 import re
 import queue
+import sys
 import subprocess
 import threading
 import time
@@ -15,6 +17,7 @@ import uuid
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+import types
 
 import soundfile as sf
 import uvicorn
@@ -28,6 +31,16 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 # ── 环境变量配置 ──────────────────────────────────────
+# ⚠️ 测试平台所有配置仅从 stt-test-tool/.env 读取
+# 严禁回退到 chatbot/.env，防止连错库、读错配置
+_ENV_FILE = Path(__file__).parent.parent / ".env"
+if _ENV_FILE.exists():
+    load_dotenv(str(_ENV_FILE), override=True)
+    print(f"[Config] 加载配置: {_ENV_FILE}")
+else:
+    print(f"[Config] ❌ 未找到配置文件: {_ENV_FILE}")
+    print("[Config] 使用环境变量默认值（仅用于本地快速启动）")
+
 # 是否启用对话追踪功能（默认：测试环境启用，生产环境禁用）
 ENABLE_CONVERSATION_TRACKING = os.getenv("ENABLE_CONVERSATION_TRACKING", "true").lower() == "true"
 ENVIRONMENT = os.getenv("ENVIRONMENT", "test")  # test / production
@@ -38,37 +51,61 @@ from mqtt_bridge import simulation_manager, SimulationManager
 # ── 注入 chatbot 项目路径 ──────────────────────────────────
 # backend/server.py -> backend/chatbot_src (symlink to ../../chatbot/src)
 _CHATBOT_SRC = Path(__file__).resolve().parent / "chatbot_src"
-import sys
 
 sys.path.insert(0, str(_CHATBOT_SRC))
 
 # ── STT 识别导入 ──────────────────────────────────────────
-from libs.paths import models_dir
-from processors.asr.asr_factory import load_offline_recognizer_from_cache
-from pipecat.transcriptions.language import Language
+from libs.paths import project_root
+try:
+    from pipecat.transcriptions.language import Language
+except ModuleNotFoundError:
+    from enum import Enum
 
-# ── 加载环境变量 ──────────────────────────────────────
-# 优先加载 stt-test-tool 自己的 .env，如果不存在则加载 chatbot 的
-_LOCAL_ENV = Path(__file__).parent.parent / ".env"
-_CHATBOT_ENV = _CHATBOT_SRC.parent / ".env"
+    class Language(Enum):
+        ZH = "zh"
+        EN = "en"
+        JA = "ja"
+        KO = "ko"
+        YUE = "yue"
+        ZH_HK = "zh-hk"
 
-if _LOCAL_ENV.exists():
-    load_dotenv(str(_LOCAL_ENV))
-    print(f"[Config] 加载本地配置: {_LOCAL_ENV}")
-elif _CHATBOT_ENV.exists():
-    load_dotenv(str(_CHATBOT_ENV))
-    print(f"[Config] 加载 chatbot 配置: {_CHATBOT_ENV}")
-else:
-    print("[Config] 未找到 .env 文件，使用默认配置")
+    _pipecat_module = types.ModuleType("pipecat")
+    _transcriptions_module = types.ModuleType("pipecat.transcriptions")
+    _language_module = types.ModuleType("pipecat.transcriptions.language")
+    _language_module.Language = Language
+    _transcriptions_module.language = _language_module
+    _pipecat_module.transcriptions = _transcriptions_module
+    sys.modules.setdefault("pipecat", _pipecat_module)
+    sys.modules.setdefault("pipecat.transcriptions", _transcriptions_module)
+    sys.modules.setdefault("pipecat.transcriptions.language", _language_module)
 
-# 补充加载 chatbot .env（本地 .env 中缺失的变量用 chatbot 的补全）
-if _LOCAL_ENV.exists() and _CHATBOT_ENV.exists():
-    load_dotenv(str(_CHATBOT_ENV), override=False)
-    print(f"[Config] 补充加载 chatbot 配置: {_CHATBOT_ENV}")
+_ASR_FACTORY_PATH = _CHATBOT_SRC / "processors" / "asr" / "asr_factory.py"
+_ASR_FACTORY = None
 
-# 配置日志
+
+def _get_asr_factory():
+    global _ASR_FACTORY
+    if _ASR_FACTORY is None:
+        asr_spec = importlib.util.spec_from_file_location("_stt_test_asr_factory", _ASR_FACTORY_PATH)
+        if asr_spec is None or asr_spec.loader is None:
+            raise ImportError(f"Unable to load ASR factory from {_ASR_FACTORY_PATH}")
+        module = importlib.util.module_from_spec(asr_spec)
+        try:
+            asr_spec.loader.exec_module(module)
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(f"ASR dependencies unavailable: {exc}") from exc
+        _ASR_FACTORY = module
+    return _ASR_FACTORY
+
+
+def load_offline_recognizer_from_cache(*args, **kwargs):
+    return _get_asr_factory().load_offline_recognizer_from_cache(*args, **kwargs)
+
+# ── 配置审计 ──────────────────────────────────────────
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 所有外部服务配置仅来自 stt-test-tool/.env，无回退
 MYSQL_HOST = os.getenv("MYSQL_HOST", "localhost")
 MYSQL_USER = os.getenv("MYSQL_USER", "chatbot")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "chatbot123")
@@ -77,6 +114,19 @@ AWS_REGION = os.getenv("AWS_REGION", "eu-west-2")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 
+# 启动配置审计：明确告知当前加载了什么配置
+logger.info("╔══════════════════════════════════════╗")
+logger.info("║      VoicePipe 测试平台 · 配置审计     ║")
+logger.info("╠══════════════════════════════════════╣")
+logger.info("║ ENVIRONMENT             = %-12s ║", ENVIRONMENT)
+logger.info("║ .env 路径               = %-12s ║", _ENV_FILE)
+logger.info("╠──────────────────────────────────────╣")
+logger.info("║ MySQL: %s@%s/%-12s ║", MYSQL_USER, MYSQL_HOST, MYSQL_DATABASE)
+logger.info("║ MQTT:  %s:%s (env=%s)      ║", os.getenv("MQTT_HOST"), os.getenv("MQTT_PORT"), os.getenv("MQTT_ENV"))
+logger.info("║ AWS:   %s/%-20s ║", AWS_REGION, MYSQL_DATABASE)
+logger.info("║ MiniMax: %s...%-10s        ║", str(os.getenv("MINIMAX_API_KEY", ""))[:16], str(os.getenv("MINIMAX_API_KEY", ""))[-8:])
+logger.info("╚══════════════════════════════════════╝")
+
 # ── MySQL 配置（供各模块共享） ──────────────────────────────
 MYSQL_CONFIG = {
     "host": MYSQL_HOST,
@@ -84,6 +134,28 @@ MYSQL_CONFIG = {
     "password": MYSQL_PASSWORD,
     "database": MYSQL_DATABASE,
 }
+
+
+def _build_runtime_config_snapshot() -> dict:
+    """Build a safe runtime snapshot for debugging environment mismatch issues."""
+    return {
+        "environment": ENVIRONMENT,
+        "conversation_tracking_enabled": ENABLE_CONVERSATION_TRACKING,
+        "mysql": {
+            "host": MYSQL_HOST,
+            "database": MYSQL_DATABASE,
+            "user": MYSQL_USER,
+        },
+        "env_file": {
+            "path": str(_ENV_FILE),
+            "exists": _ENV_FILE.exists(),
+        },
+        "paths": {
+            "chatbot_src": str(_CHATBOT_SRC),
+            "frontend_dist_exists": _FRONTEND_DIST.exists(),
+            "audio_cache": str(CACHE_DIR),
+        },
+    }
 
 # ── TTS 语音生成 ──────────────────────────────────────────
 from tts_service import (  # noqa: E402
@@ -112,9 +184,29 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.on_event("startup")
+def log_runtime_config():
+    snapshot = _build_runtime_config_snapshot()
+    logger.info(
+        "Runtime config loaded: env=%s mysql=%s/%s env_file=%s frontend_dist_exists=%s",
+        snapshot["environment"],
+        snapshot["mysql"]["host"],
+        snapshot["mysql"]["database"],
+        snapshot["env_file"]["exists"],
+        snapshot["paths"]["frontend_dist_exists"],
+    )
+
+
+@app.get("/api/debug/runtime-config", include_in_schema=False)
+def runtime_config():
+    """Return a sanitized snapshot of the backend runtime configuration."""
+    return _build_runtime_config_snapshot()
+
 # ── 路径常量 ──────────────────────────────────────────────
 MODEL_NAME = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
-MODEL_PATH = models_dir() / MODEL_NAME
+CHATBOT_PROJECT_ROOT = project_root()
+MODEL_PATH = CHATBOT_PROJECT_ROOT / "models" / MODEL_NAME
 TEST_WAVS_DIR = MODEL_PATH / "test_wavs"
 CHATBOT_TESTDATA = Path(_CHATBOT_SRC).parent / "tests" / "asr" / "testdata"
 CACHE_DIR = Path(__file__).parent / "audio_cache"
@@ -2845,5 +2937,3 @@ async def serve_spa(full_path: str):
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8765)
-
-
