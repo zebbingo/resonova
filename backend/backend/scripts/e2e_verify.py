@@ -37,8 +37,8 @@ FIGURINE_ID = "doctor"
 MODE = "dialogue"
 TIMEOUT_SIM = 120
 
-# Test audio: original chatbot test WAV (contains speech ~5s-45s range)
-TEST_WAV = "/home/administrator/projects/chatbot/tests/asr/testdata/mqtt_vad_capture_input.wav"
+# Test audio: trimmed WAV (skip 4.6s silence, amplified 1.5x)
+TEST_WAV = "/tmp/mqtt_vad_trimmed.wav"
 
 PASS = []
 FAIL = []
@@ -140,12 +140,21 @@ found = FIGURINE_ID in fids
 if found: ok(f"Target '{FIGURINE_ID}' found")
 else: fail(f"Target '{FIGURINE_ID}' not found")
 
-# ── Phase 3: Connect ─────────────────────────────────
-print("\n[3/5] Device Connect")
+# ── Phase 3: Cleanup stale state + Connect ──────────
+print("\n[3/5] Cleanup + Device Connect")
 print("-" * 40)
 
-# Disconnect first to clear any stale state
-http_post("/api/device/disconnect/verify-dev", {})
+# Cleanup orphan sessions first (prevents stale session interference)
+http_post("/api/device/cleanup-orphans", {"max_age_seconds": 10})
+
+# Disconnect any stale device first
+http_post(f"/api/device/disconnect/{DEVICE_ID}", {})
+
+# Wait for bot_mqtt to finish processing the old session
+# Without this delay, the new session may arrive while bot is still
+# draining the previous session's audio, causing it to miss the start.
+print("  Waiting 5s for previous session to drain...")
+time.sleep(5)
 
 conn = http_post("/api/device/connect", {
     "device_id": DEVICE_ID,

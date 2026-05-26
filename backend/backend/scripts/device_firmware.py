@@ -92,7 +92,7 @@ class TurnState(Enum):
 
 class _TurnTracker:
     __slots__ = ("turn_id", "state", "chunks_received", "eos_total_seq",
-                 "eos_event", "audio_data", "stt_text")
+                 "eos_event", "audio_data", "stt_text", "downstream_started")
 
     def __init__(self, turn_id: str):
         self.turn_id = turn_id
@@ -102,6 +102,7 @@ class _TurnTracker:
         self.eos_event = threading.Event()
         self.audio_data: list[bytes] = []
         self.stt_text: str = ""
+        self.downstream_started = False
 
 
 class DeviceFirmware:
@@ -359,7 +360,13 @@ class DeviceFirmware:
         self._publish_request(f"audio/{self.session_id}/{turn_id}/done", payload)
         self._log(f"[FW] done turn={turn_id} played_seq={played_seq}")
 
-    def wait_for_turn_response(self, turn_id: Optional[str] = None, timeout: float = 90) -> bool:
+    def wait_for_turn_response(
+        self,
+        turn_id: Optional[str] = None,
+        timeout: float = 90,
+        *,
+        expect_downstream: bool = False,
+    ) -> bool:
         tid = turn_id or str(self._turn_counter)
         with self._lock:
             tracker = self._active_turns.get(tid)
@@ -371,24 +378,29 @@ class DeviceFirmware:
         stable_time = time.time()
 
         while time.time() < deadline:
-            if tracker.eos_event.is_set():
-                self._flush_after_audio_commands(tid)
-                return True
-
-            if tracker.stt_text:
-                self._flush_after_audio_commands(tid)
-                return True
-
             with self._lock:
                 for cmd in self._commands:
                     if cmd.get("_turn_id") == tid:
                         self._flush_after_audio_commands(tid)
                         return True
 
+            if expect_downstream:
+                if tracker.downstream_started and tracker.eos_event.is_set():
+                    self._flush_after_audio_commands(tid)
+                    return True
+            else:
+                if tracker.eos_event.is_set():
+                    self._flush_after_audio_commands(tid)
+                    return True
+
+                if tracker.stt_text:
+                    self._flush_after_audio_commands(tid)
+                    return True
+
             if tracker.chunks_received > last_count:
                 last_count = tracker.chunks_received
                 stable_time = time.time()
-            if tracker.chunks_received > 5 and time.time() - stable_time > 3.0:
+            if not expect_downstream and tracker.chunks_received > 5 and time.time() - stable_time > 3.0:
                 self._flush_after_audio_commands(tid)
                 return True
 
@@ -491,10 +503,12 @@ class DeviceFirmware:
         if action == "start":
             is_downstream = _prefix == "response"
             if is_downstream:
+                tracker.downstream_started = True
                 was_uploading = tracker.chunks_received > 0 or len(tracker.audio_data) > 0
                 if was_uploading:
                     self._log(f"[FW] downstream audio/start turn={turn_id} (preserving upload tracker)")
                     tracker.state = TurnState.PLAYING
+                    tracker.eos_event.clear()
                     if self._on_mqtt_event:
                         self._on_mqtt_event("tts_synthesis", {
                             "state": "start",

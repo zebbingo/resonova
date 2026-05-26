@@ -1514,6 +1514,13 @@ def device_simulation_status():
     }
 
 
+@app.post("/api/device/cleanup-orphans")
+def cleanup_orphan_sessions(max_age_seconds: float = 300):
+    """清理原生会话结果（超过指定秒数未完成的 pending session）。"""
+    count = simulation_manager.cleanup_orphan_sessions(max_age_seconds=max_age_seconds)
+    return {"cleaned": count}
+
+
 @app.get("/api/device/events/{session_id}")
 def poll_session_events(session_id: str):
     """轮询获取 session 的事件（用于不支持 WebSocket 的前端）。"""

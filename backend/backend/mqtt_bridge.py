@@ -495,9 +495,19 @@ class ConnectedDevice:
                     "topic": f"{self._fw.base_topic}/response/#",
                 })
 
-            intro_ok = self._fw.wait_for_intro_eos(timeout=15)
+            intro_ok = self._fw.wait_for_intro_eos(timeout=90)
             if intro_ok:
                 logger.info("Intro EOS received for session %s", result.session_id)
+                self._emit_session(result.session_id, "session_status", {
+                    "status": "intro_complete",
+                    "session_id": result.session_id,
+                })
+            else:
+                logger.warning("Intro EOS timeout for session %s (still sending audio)", result.session_id)
+                self._emit_session(result.session_id, "session_status", {
+                    "status": "intro_timeout",
+                    "session_id": result.session_id,
+                })
 
             # pcm_data is already float32 [-1, 1] from _load_wav;
             # start_turn converts it back to int16 internally for Opus.
@@ -506,7 +516,11 @@ class ConnectedDevice:
             frame_size = 960
             result.total_chunks = max(1, (len(pcm_data) + frame_size - 1) // frame_size)
 
-            response_ok = self._fw.wait_for_turn_response(turn_id=turn_id, timeout=90)
+            response_ok = self._fw.wait_for_turn_response(
+                turn_id=turn_id,
+                timeout=90,
+                expect_downstream=subscribe_response,
+            )
             logger.info("Turn %s response: %s", turn_id, "ok" if response_ok else "timeout")
 
             result.stt_text = "\n".join(self._fw.get_stt_texts())
@@ -789,10 +803,12 @@ class SimulationManager:
         }
 
     def disconnect_device(self, device_id: str) -> dict:
-        """Disconnect a device (power_off)."""
+        """Disconnect a device (power_off) and wait for background thread to exit."""
+        thread = None
+        dev = None
         with self._lock:
             dev = self._devices.pop(device_id, None)
-            self._threads.pop(device_id, None)
+            thread = self._threads.pop(device_id, None)
 
         if dev is None:
             return {"device_id": device_id, "status": "not_found"}
@@ -802,6 +818,12 @@ class SimulationManager:
 
         dev.power_off()
         self.event_bus.remove_queue(device_id)
+
+        # Wait for background thread to finish (avoids orphan threads/sessions)
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=30)
+            if thread.is_alive():
+                logger.warning("Device %s thread still alive after 30s timeout, detaching", device_id)
 
         return {"device_id": device_id, "status": "disconnected"}
 
@@ -879,8 +901,12 @@ class SimulationManager:
             for device_id, dev in list(self._devices.items()):
                 if dev.is_simulating:
                     dev.stop_current_session()
-                    return True
-        return False
+        # Wait briefly for all simulation threads to exit
+        with self._lock:
+            for device_id, thread in list(self._threads.items()):
+                if thread.is_alive():
+                    thread.join(timeout=10)
+        return True
 
     def get_device_status(self, device_id: str) -> dict | None:
         dev = self._devices.get(device_id)
@@ -920,6 +946,27 @@ class SimulationManager:
                 }
                 for did, dev in self._devices.items()
             ]
+
+    def cleanup_orphan_sessions(self, max_age_seconds: float = 300) -> int:
+        """Clean up orphan simulation results (started but never completed).
+
+        Returns the number of orphan results cleaned up.
+        """
+        now = time.time()
+        count = 0
+        with self._lock:
+            for sid in list(self._results.keys()):
+                r = self._results[sid]
+                started = r.get("started_at", 0)
+                if started and now - started > max_age_seconds:
+                    status = r.get("status", "")
+                    if status in ("pending",):
+                        r["status"] = "orphan_cleaned"
+                        count += 1
+        if count:
+            logger.warning("Cleaned %d orphan simulation results", count)
+            self._flush_history()
+        return count
 
     def _save_result(self, result: SimulationResult):
         result_dict = asdict(result)
@@ -1017,14 +1064,14 @@ class SimulationManager:
             else:
                 raise ValueError(f"Device {device_id} already has an active simulation")
 
-            if dev is not None and dev.is_connected:
-                needs_reconnect = (
-                    dev.broker_profile != resolved_profile
-                    or dev.env != resolved_env
-                    or dev.broker_host != resolved_host
-                    or dev.broker_port != resolved_port
-                    or dev.broker_tls != resolved_tls
-                )
+        if dev is not None and dev.is_connected:
+            needs_reconnect = (
+                dev.broker_profile != resolved_profile
+                or dev.env != resolved_env
+                or dev.broker_host != resolved_host
+                or dev.broker_port != resolved_port
+                or dev.broker_tls != resolved_tls
+            )
             if needs_reconnect:
                 self.disconnect_device(device_id)
                 dev = None
