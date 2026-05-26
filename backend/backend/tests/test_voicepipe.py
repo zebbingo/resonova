@@ -17,6 +17,7 @@ import os
 import threading
 import time
 import uuid
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -459,6 +460,205 @@ class TestSimulationManager:
         mgr = SimulationManager()
         assert mgr.get_active_sessions() == []
 
+    def test_connect_device_uses_broker_overrides(self):
+        import mqtt_bridge
+
+        captured = {}
+
+        class FakeDevice:
+            def __init__(self, *, device_id, figurine_id, mode, nfc_id, broker_profile, env, broker_host, broker_port, broker_tls, event_bus):
+                captured.update(
+                    {
+                        "device_id": device_id,
+                        "figurine_id": figurine_id,
+                        "mode": mode,
+                        "nfc_id": nfc_id,
+                        "broker_profile": broker_profile,
+                        "env": env,
+                        "broker_host": broker_host,
+                        "broker_port": broker_port,
+                        "broker_tls": broker_tls,
+                    }
+                )
+                self.device_id = device_id
+                self.figurine_id = figurine_id
+                self.mode = mode
+                self.broker_profile = broker_profile
+                self.env = env
+                self.broker_host = broker_host
+                self.broker_port = broker_port
+                self.broker_tls = broker_tls
+                self.is_connected = False
+                self.is_simulating = False
+
+            def power_on(self):
+                self.is_connected = True
+
+            def power_off(self):
+                self.is_connected = False
+
+            def get_fw_status(self):
+                return {"device_id": self.device_id, "state": "idle"}
+
+        mgr = mqtt_bridge.SimulationManager()
+        with patch.object(mqtt_bridge, "ConnectedDevice", FakeDevice):
+            result = mgr.connect_device(
+                "dev-1",
+                "fig-1",
+                mode="dialogue",
+                nfc_id="nfc-1",
+                mqtt_env="prod",
+                mqtt_host="relay.example.com",
+                mqtt_port=8883,
+                mqtt_tls=True,
+            )
+
+        assert result["status"] == "connected"
+        assert result["mqtt_env"] == "prod"
+        assert result["mqtt_host"] == "relay.example.com"
+        assert result["mqtt_port"] == 8883
+        assert result["mqtt_tls"] is True
+        assert captured["env"] == "prod"
+        assert captured["broker_host"] == "relay.example.com"
+        assert captured["broker_port"] == 8883
+        assert captured["broker_tls"] is True
+
+    def test_connect_device_defaults_to_local_broker(self):
+        import mqtt_bridge
+
+        captured = {}
+
+        class FakeDevice:
+            def __init__(self, *, device_id, figurine_id, mode, nfc_id, broker_profile, env, broker_host, broker_port, broker_tls, event_bus):
+                captured.update(
+                    {
+                        "device_id": device_id,
+                        "figurine_id": figurine_id,
+                        "mode": mode,
+                        "nfc_id": nfc_id,
+                        "broker_profile": broker_profile,
+                        "env": env,
+                        "broker_host": broker_host,
+                        "broker_port": broker_port,
+                        "broker_tls": broker_tls,
+                    }
+                )
+                self.device_id = device_id
+                self.figurine_id = figurine_id
+                self.mode = mode
+                self.env = env
+                self.broker_profile = broker_profile
+                self.broker_host = broker_host
+                self.broker_port = broker_port
+                self.broker_tls = broker_tls
+                self.is_connected = False
+                self.is_simulating = False
+
+            def power_on(self):
+                self.is_connected = True
+
+            def power_off(self):
+                self.is_connected = False
+
+            def get_fw_status(self):
+                return {"device_id": self.device_id, "state": "idle"}
+
+        mgr = mqtt_bridge.SimulationManager()
+        with patch.object(mqtt_bridge, "_resolve_local_mqtt_host", return_value="localhost"), patch.object(
+            mqtt_bridge, "ConnectedDevice", FakeDevice
+        ):
+            result = mgr.connect_device(
+                "dev-local",
+                "fig-local",
+                mode="dialogue",
+            )
+
+        assert result["status"] == "connected"
+        assert result["mqtt_profile"] == "local"
+        assert result["mqtt_env"] == "development"
+        assert result["mqtt_host"] == "localhost"
+        assert result["mqtt_port"] == 1883
+        assert result["mqtt_tls"] is False
+        assert captured["broker_profile"] == "local"
+        assert captured["env"] == "development"
+        assert captured["broker_host"] == "localhost"
+        assert captured["broker_port"] == 1883
+        assert captured["broker_tls"] is False
+
+    def test_start_simulation_propagates_broker_overrides(self, tmp_path):
+        import mqtt_bridge
+
+        class FakeDevice:
+            def __init__(self, *, device_id, figurine_id, mode, nfc_id, broker_profile, env, broker_host, broker_port, broker_tls, event_bus):
+                self.device_id = device_id
+                self.figurine_id = figurine_id
+                self.mode = mode
+                self.broker_profile = broker_profile
+                self.env = env
+                self.broker_host = broker_host
+                self.broker_port = broker_port
+                self.broker_tls = broker_tls
+                self.is_connected = False
+                self.is_simulating = False
+
+            def power_on(self):
+                self.is_connected = True
+
+            def power_off(self):
+                self.is_connected = False
+
+            def run_session(self, wav_path, audio_id="", speed=0, subscribe_response=False):
+                return SimpleNamespace(
+                    session_id="real-session-1",
+                    device_id=self.device_id,
+                    figurine_id=self.figurine_id,
+                    mode=self.mode,
+                    audio_id=audio_id,
+                    status="completed",
+                    audio_duration_sec=0.5,
+                    total_chunks=1,
+                    send_duration_sec=0.5,
+                    started_at=time.time(),
+                    completed_at=time.time(),
+                    stt_text="",
+                    stt_confidence=0.0,
+                    stt_language="",
+                    tts_response_count=0,
+                    tts_chunks=0,
+                    tts_duration_ms=0,
+                    reply_text="",
+                    backend_responses=[],
+                    error="",
+                    cue_count=0,
+                    commands_received=0,
+                    stt_texts=[],
+                )
+
+            def get_fw_status(self):
+                return {"device_id": self.device_id, "state": "idle"}
+
+        wav_path = _make_wav(tmp_path, duration_sec=0.2)
+
+        mgr = mqtt_bridge.SimulationManager()
+        with patch.object(mqtt_bridge, "ConnectedDevice", FakeDevice):
+            session_id = mgr.start_simulation(
+                device_id="dev-auto",
+                figurine_id="fig-auto",
+                mode="dialogue",
+                audio_id="audio-auto",
+                resolve_audio=lambda _audio_id: wav_path,
+                mqtt_env="relay",
+                mqtt_host="relay.local",
+                mqtt_port=1884,
+                mqtt_tls=False,
+            )
+
+        assert session_id
+        result = mgr.get_result(session_id)
+        assert result is not None
+        assert result["status"] == "completed"
+        assert result["device_id"] == "dev-auto"
+
 
 # ══════════════════════════════════════════════════════════
 # 2. server API integration tests (FastAPI TestClient)
@@ -502,6 +702,12 @@ class TestRuntimeConfigEndpoint:
 
         data = resp.json()
         assert data["environment"] in {"test", "production", os.getenv("ENVIRONMENT", "test")}
+        assert "mqtt" in data
+        assert data["mqtt"]["profile"] in {"local", "relay", "custom", os.getenv("MQTT_BROKER_PROFILE", "local")}
+        assert data["mqtt"]["host"]
+        assert isinstance(data["mqtt"]["port"], int)
+        assert data["mqtt"]["env"]
+        assert isinstance(data["mqtt"]["tls"], bool)
         assert "mysql" in data
         assert data["mysql"]["host"]
         assert data["mysql"]["database"]

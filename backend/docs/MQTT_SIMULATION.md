@@ -102,6 +102,10 @@ async function startSimulation(config: SimulationConfig) {
     audio_id: config.audioId,
     test_type: 'mqtt',
     subscribe_response: true,
+    mqtt_env: config.mqttEnv,
+    mqtt_host: config.mqttHost,
+    mqtt_port: config.mqttPort,
+    mqtt_tls: config.mqttTls,
   })
   
   state.sessionId = resp.data.session_id
@@ -123,6 +127,10 @@ def start_device_simulation(req: SimulateRequest):
         audio_id=req.audio_id,
         resolve_audio=_resolve_audio_for_sim,
         subscribe_response=req.subscribe_response,
+        mqtt_env=req.mqtt_env,
+        mqtt_host=req.mqtt_host,
+        mqtt_port=req.mqtt_port,
+        mqtt_tls=req.mqtt_tls,
     )
     return {"session_id": session_id, "status": "started"}
 ```
@@ -357,6 +365,10 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 MQTT_HOST=localhost          # WSL 中的 Mosquitto 地址
 MQTT_PORT=1883               # MQTT 端口
 MQTT_ENV=development         # 环境标识
+MQTT_TLS=false               # 是否使用 TLS
+
+# 可选：测试平台也可以显式指定 broker / relay
+# mqtt_env / mqtt_host / mqtt_port / mqtt_tls
 
 # MySQL 配置（用于查询角色和音频）
 MYSQL_HOST=192.168.52.134    # WSL IP（Windows 访问）
@@ -364,6 +376,31 @@ MYSQL_USER=chatbot
 MYSQL_PASSWORD=chatbot123
 MYSQL_DATABASE=ZebbieDb
 ```
+
+### 基础设施归属说明
+
+- 本地 MQTT Broker 属于测试平台的基础设施，不是业务服务本身。
+- workspace 里的脚本负责安装、启动和检查 broker，例如：
+  - `scripts/setup-local-db.sh`
+  - `scripts/install-mongo-mqtt.sh`
+  - `scripts/wsl/check-services.sh`
+  - `scripts/check-services.ps1`
+- Notion 里有明确的 broker 落地任务：
+  - `Setup EMQX for Yusheng`
+  - Assignee: `Han Wu`
+  - 这说明 broker 基础设施曾以 EMQX 任务形式被单独搭建和维护。
+- 当前测试平台默认连本地 Mosquitto；需要更贴近生产时，可以显式切到 relay / remote broker。
+
+### 历史实现线索
+
+本地 broker / simulator 这条线不是临时调试手段，而是沿着 MQTT 原型逐步演进出来的：
+
+- `MQTT Send Test`（Han Wu）先做了最基础的 MQTT 连通性验证：向测试 topic 发送 100 帧固定大小数据，确认 broker 通路可用。
+- `Mic->MQTT->STT->LLM->TTS->MQTT->Speaker`（Han Wu）说明更早期就已经有完整的音频链路原型，不只是单纯“能发消息”。
+- `MQTT with input output using opus`、`MQTT Send Test with Chiptalk` 继续把链路往 opus 音频 + MQTT 设备协议方向推进。
+- 现有实现里的 `projects/chatbot/src/mqtt_test_client.py` 和 `tests/integration/mqtt/device_simulator.py`，分别可以视为参考客户端和集成测试模拟器的代码化落点。
+
+所以，本地 Mosquitto、MQTT 模拟器、设备模拟应该统一视为**测试平台基础设施**的一部分，而不是临时调试附属品。
 
 ### 最大并发数
 

@@ -367,15 +367,17 @@ class DeviceFirmware:
             return False
 
         deadline = time.time() + timeout
-        stt_seen = bool(tracker.stt_text)
+        last_count = 0
+        stable_time = time.time()
 
         while time.time() < deadline:
             if tracker.eos_event.is_set():
                 self._flush_after_audio_commands(tid)
                 return True
 
-            if tracker.stt_text and not stt_seen:
-                stt_seen = True
+            if tracker.stt_text:
+                self._flush_after_audio_commands(tid)
+                return True
 
             with self._lock:
                 for cmd in self._commands:
@@ -383,7 +385,10 @@ class DeviceFirmware:
                         self._flush_after_audio_commands(tid)
                         return True
 
-            if tracker.chunks_received > 0:
+            if tracker.chunks_received > last_count:
+                last_count = tracker.chunks_received
+                stable_time = time.time()
+            if tracker.chunks_received > 5 and time.time() - stable_time > 3.0:
                 self._flush_after_audio_commands(tid)
                 return True
 

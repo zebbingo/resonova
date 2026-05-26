@@ -114,6 +114,21 @@ AWS_REGION = os.getenv("AWS_REGION", "eu-west-2")
 AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID")
 AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY")
 
+
+def _read_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return default
+
+
+MQTT_BROKER_PROFILE = os.getenv("MQTT_BROKER_PROFILE", "local")
+MQTT_HOST = os.getenv("MQTT_HOST", "localhost")
+MQTT_PORT = _read_int_env("MQTT_PORT", 1883)
+MQTT_ENV = os.getenv("MQTT_ENV", "development")
+MQTT_TLS = str(os.getenv("MQTT_TLS", "false")).strip().lower() in {"1", "true", "yes", "on"}
+
 # 启动配置审计：明确告知当前加载了什么配置
 logger.info("╔══════════════════════════════════════╗")
 logger.info("║      VoicePipe 测试平台 · 配置审计     ║")
@@ -122,7 +137,7 @@ logger.info("║ ENVIRONMENT             = %-12s ║", ENVIRONMENT)
 logger.info("║ .env 路径               = %-12s ║", _ENV_FILE)
 logger.info("╠──────────────────────────────────────╣")
 logger.info("║ MySQL: %s@%s/%-12s ║", MYSQL_USER, MYSQL_HOST, MYSQL_DATABASE)
-logger.info("║ MQTT:  %s:%s (env=%s)      ║", os.getenv("MQTT_HOST"), os.getenv("MQTT_PORT"), os.getenv("MQTT_ENV"))
+logger.info("║ MQTT:  profile=%s %s:%s (env=%s tls=%s) ║", MQTT_BROKER_PROFILE, MQTT_HOST, MQTT_PORT, MQTT_ENV, MQTT_TLS)
 logger.info("║ AWS:   %s/%-20s ║", AWS_REGION, MYSQL_DATABASE)
 logger.info("║ MiniMax: %s...%-10s        ║", str(os.getenv("MINIMAX_API_KEY", ""))[:16], str(os.getenv("MINIMAX_API_KEY", ""))[-8:])
 logger.info("╚══════════════════════════════════════╝")
@@ -141,6 +156,13 @@ def _build_runtime_config_snapshot() -> dict:
     return {
         "environment": ENVIRONMENT,
         "conversation_tracking_enabled": ENABLE_CONVERSATION_TRACKING,
+        "mqtt": {
+            "profile": MQTT_BROKER_PROFILE,
+            "host": MQTT_HOST,
+            "port": MQTT_PORT,
+            "env": MQTT_ENV,
+            "tls": MQTT_TLS,
+        },
         "mysql": {
             "host": MYSQL_HOST,
             "database": MYSQL_DATABASE,
@@ -1029,6 +1051,11 @@ class SimulateRequest(BaseModel):
     nfc_id: str = "sim-nfc"          # 模拟 NFC 标签 ID
     subscribe_response: bool = False  # 是否订阅服务端下行响应
     speed: float = 0                  # 0=最快, 1.0=实时
+    mqtt_profile: str | None = None
+    mqtt_env: str | None = None
+    mqtt_host: str | None = None
+    mqtt_port: int | None = None
+    mqtt_tls: bool | None = None
 
 
 class SimulateResponse(BaseModel):
@@ -1361,6 +1388,11 @@ class DeviceConnectRequest(BaseModel):
     figurine_id: str = "doctor"
     mode: str = "dialogue"
     nfc_id: str = "sim-nfc"
+    mqtt_profile: str | None = None
+    mqtt_env: str | None = None
+    mqtt_host: str | None = None
+    mqtt_port: int | None = None
+    mqtt_tls: bool | None = None
 
 
 @app.post("/api/device/connect")
@@ -1372,6 +1404,11 @@ def connect_device(req: DeviceConnectRequest):
             figurine_id=req.figurine_id,
             mode=req.mode,
             nfc_id=req.nfc_id,
+            mqtt_profile=req.mqtt_profile,
+            mqtt_env=req.mqtt_env,
+            mqtt_host=req.mqtt_host,
+            mqtt_port=req.mqtt_port,
+            mqtt_tls=req.mqtt_tls,
         )
         return result
     except ConnectionError as exc:
@@ -1439,6 +1476,11 @@ def start_device_simulation(req: SimulateRequest):
             nfc_id=req.nfc_id,
             subscribe_response=req.subscribe_response,
             speed=req.speed,
+            mqtt_profile=req.mqtt_profile,
+            mqtt_env=req.mqtt_env,
+            mqtt_host=req.mqtt_host,
+            mqtt_port=req.mqtt_port,
+            mqtt_tls=req.mqtt_tls,
         )
     except ValueError as exc:
         return {"error": str(exc)}

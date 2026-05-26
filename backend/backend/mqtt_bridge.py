@@ -166,7 +166,7 @@ def _resolve_broker_config(
     profile = _resolve_mqtt_profile(mqtt_profile)
 
     if profile == "local":
-        env = mqtt_env or "development"
+        env = mqtt_env or _resolve_mqtt_env()
         host = mqtt_host or _resolve_local_mqtt_host()
         port = mqtt_port if mqtt_port is not None else 1883
         tls = False if mqtt_tls is None else bool(mqtt_tls)
@@ -624,13 +624,26 @@ class ConnectedDevice:
             event["session_id"] = self.session_id or ""
             self.event_bus.publish(self.device_id, event)
 
-    def _emit_session(self, session_id: str, event_type: str, data: dict):
+    def _emit_session(self, session_id: str, event_type: str, data: dict): 
         if self.event_bus:
             event = dict(data)
             event["type"] = event_type
             event["timestamp"] = time.time()
             event["device_id"] = self.device_id
             event["session_id"] = session_id
+    
+            # ── 协议归一化：模拟器发 state，前端等 status ──
+            # 设备固件按真实设备行为发送 state: "start" / "complete"，
+            # 测试平台后端负责将其翻译为前端统一的 status 语义。
+            if event_type == "tts_synthesis" and "state" in event and "status" not in event:
+                raw_state = event["state"]
+                if raw_state == "complete":
+                    event["status"] = "success"
+                elif raw_state == "start":
+                    event["status"] = "start"
+                else:
+                    event["status"] = raw_state
+    
             self.event_bus.publish(session_id, event)
             self.event_bus.publish(self.device_id, event)
 

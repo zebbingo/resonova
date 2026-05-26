@@ -33,9 +33,12 @@ QUICK_MODE = "--quick" in sys.argv
 
 BACKEND = "http://127.0.0.1:8765"
 DEVICE_ID = "verify-dev"
-FIGURINE_ID = "astronaut"
+FIGURINE_ID = "doctor"
 MODE = "dialogue"
 TIMEOUT_SIM = 120
+
+# Test audio: original chatbot test WAV (contains speech ~5s-45s range)
+TEST_WAV = "/home/administrator/projects/chatbot/tests/asr/testdata/mqtt_vad_capture_input.wav"
 
 PASS = []
 FAIL = []
@@ -157,17 +160,16 @@ print("\n[4/5] Simulate Session")
 print("-" * 40)
 
 # Use the direct WAV file from chatbot test data
-test_wav = "/home/administrator/projects/chatbot/tests/asr/testdata/mqtt_vad_capture_input.wav"
-if os.path.exists(test_wav):
+if os.path.exists(TEST_WAV):
     ok("Test WAV exists")
 else:
-    fail("Test WAV missing", test_wav)
+    fail("Test WAV missing", TEST_WAV)
 
 sim = http_post("/api/device/simulate", {
     "device_id": DEVICE_ID,
     "figurine_id": FIGURINE_ID,
     "mode": MODE,
-    "audio_id": test_wav,
+    "audio_id": TEST_WAV,
     "subscribe_response": True,
 })
 
