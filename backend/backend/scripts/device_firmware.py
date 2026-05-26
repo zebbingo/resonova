@@ -367,19 +367,26 @@ class DeviceFirmware:
             return False
 
         deadline = time.time() + timeout
-        last_count = 0
-        stable_time = time.time()
+        stt_seen = bool(tracker.stt_text)
 
         while time.time() < deadline:
             if tracker.eos_event.is_set():
                 self._flush_after_audio_commands(tid)
                 return True
-            if tracker.chunks_received > last_count:
-                last_count = tracker.chunks_received
-                stable_time = time.time()
-            if tracker.chunks_received > 5 and time.time() - stable_time > 3.0:
+
+            if tracker.stt_text and not stt_seen:
+                stt_seen = True
+
+            with self._lock:
+                for cmd in self._commands:
+                    if cmd.get("_turn_id") == tid:
+                        self._flush_after_audio_commands(tid)
+                        return True
+
+            if tracker.chunks_received > 0:
                 self._flush_after_audio_commands(tid)
                 return True
+
             time.sleep(0.3)
         return False
 
@@ -477,10 +484,22 @@ class DeviceFirmware:
             tracker = self._get_or_create_turn(turn_id)
 
         if action == "start":
-            tracker.state = TurnState.PLAYING
+            is_downstream = _prefix == "response"
+            if is_downstream:
+                was_uploading = tracker.chunks_received > 0 or len(tracker.audio_data) > 0
+                if was_uploading:
+                    self._log(f"[FW] downstream audio/start turn={turn_id} (preserving upload tracker)")
+                    tracker.state = TurnState.PLAYING
+                    if self._on_mqtt_event:
+                        self._on_mqtt_event("tts_synthesis", {
+                            "state": "start",
+                            "turn_id": turn_id,
+                        })
+                    return
             tracker.chunks_received = 0
             tracker.audio_data = []
             tracker.eos_event.clear()
+            tracker.state = TurnState.PLAYING
             self._log(f"[FW] audio/start turn={turn_id} cue={self._is_cue_turn_id(turn_id)}")
             if self._on_mqtt_event:
                 self._on_mqtt_event("tts_synthesis", {
@@ -541,6 +560,10 @@ class DeviceFirmware:
         elif action == "introeos":
             self._intro_eos_event.set()
             self._log("[FW] introeos")
+            if self._on_mqtt_event:
+                self._on_mqtt_event("introeos", {
+                    "turn_id": turn_id,
+                })
 
     def _handle_command_message(self, short: str, msg):
         try:
