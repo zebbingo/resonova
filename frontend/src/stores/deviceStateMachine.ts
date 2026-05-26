@@ -60,6 +60,10 @@ const VALID_TRANSITIONS: Record<string, string> = {
   // 错误恢复
   'error->idle':              '手动重置',
   'error->offline':           '断开连接',
+
+  // 会话中重连（设备在活跃会话中断开/重连）
+  'session_active->connecting': '会话中重新连接',
+  'session_active->idle':       '会话中断开/重置',
 }
 Object.freeze(VALID_TRANSITIONS)
 
@@ -207,7 +211,6 @@ export const deviceSM = {
   get receivedChunks() { return _state.receivedChunks },
   get commandCount() { return _state.commandCount },
 
-  deviceState,
   isConnecting,
   stateLabel,
   stateColor,

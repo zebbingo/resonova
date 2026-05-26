@@ -310,7 +310,7 @@ watch(
       </div>
       <div v-if="hasSimulation" class="flow-metrics">
         <MetricsPanel
-          :metrics="entry!.sttResult.value?.metrics ?? null"
+          :metrics="entry!.sttResult?.metrics ?? null"
           :session-id="entry!.sessionId"
           :sent-chunks="entry!.sentChunks"
         />
