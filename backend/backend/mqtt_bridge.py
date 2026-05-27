@@ -449,6 +449,134 @@ class ConnectedDevice:
         self._stop_requested = True
         self.stop_current_session()
 
+    def start_session_and_await_intro(self) -> Optional[str]:
+        """Start a session and wait for server intro audio to finish.
+        
+        Unlike run_session(), this does NOT send any user audio turn.
+        It just opens the session so the server plays the intro.
+        After intro ends, the session stays alive for subsequent user turns.
+        Returns the session_id, or None if failed.
+        """
+        if not self._connected or not self._fw:
+            logger.warning("Device %s not connected, cannot start intro session", self.device_id)
+            return None
+
+        with self._lock:
+            if self._simulating:
+                logger.warning("Device %s already has active session", self.device_id)
+                return None
+            self._simulating = True
+
+        try:
+            self._fw.start_session(
+                figurine_id=self.figurine_id,
+                nfc_id=self.nfc_id,
+                mode=self.mode,
+            )
+            session_id = self._fw.session_id
+            self.session_id = session_id
+            logger.info("Intro session started: %s", session_id)
+
+            self._emit_session(session_id, "session_status", {
+                "status": "active",
+                "session_id": session_id,
+            })
+            self._emit_session(session_id, "intro", {"status": "intro_playing"})
+
+            intro_ok = self._fw.wait_for_intro_eos(timeout=90)
+            if intro_ok:
+                logger.info("Intro EOS received for session %s", session_id)
+                self._emit_session(session_id, "intro", {
+                    "status": "intro_complete",
+                    "session_id": session_id,
+                })
+            else:
+                logger.warning("Intro EOS timeout for session %s", session_id)
+                self._emit_session(session_id, "intro", {
+                    "status": "intro_timeout",
+                    "session_id": session_id,
+                })
+
+            return session_id
+
+        except Exception as exc:
+            logger.exception("Intro session failed on device %s: %s", self.device_id, exc)
+            self._emit_device("device_error", {"error": str(exc)})
+            return None
+
+        finally:
+            with self._lock:
+                self._simulating = False
+
+    def send_user_turn(self, wav_path: Path) -> SimulationResult:
+        """Send a user audio turn on the already-active session.
+        
+        The session must have been started by start_session_and_await_intro().
+        After the turn completes, the session stays alive for more turns.
+        """
+        import numpy as np
+
+        if not self._connected or not self._fw:
+            raise ConnectionError(f"Device {self.device_id} is not connected")
+        if not self._fw.session_id:
+            raise ConnectionError(f"Device {self.device_id} has no active session")
+
+        pcm_data, duration_sec = self._load_wav(wav_path)
+
+        with self._lock:
+            if self._simulating:
+                raise ValueError(f"Device {self.device_id} already has an active send")
+            self._simulating = True
+
+        session_id = self._fw.session_id
+        result = SimulationResult(
+            session_id=session_id,
+            device_id=self.device_id,
+            figurine_id=self.figurine_id,
+            mode=self.mode,
+            audio_id=wav_path.stem,
+        )
+        result.started_at = time.time()
+        result.status = "pending"
+
+        try:
+            result.audio_duration_sec = round(duration_sec, 2)
+
+            turn_id = self._fw.start_turn(pcm_data)
+            result.total_chunks = max(1, (len(pcm_data) + 960 - 1) // 960)
+
+            response_ok = self._fw.wait_for_turn_response(turn_id=turn_id, timeout=90)
+            logger.info("Turn %s response: %s", turn_id, "ok" if response_ok else "timeout")
+
+            result.stt_text = "\n".join(self._fw.get_stt_texts())
+            result.stt_texts = self._fw.get_stt_texts()
+            result.cue_count = self._fw._cue_counter
+            result.commands_received = len(self._fw.get_all_commands())
+            for cmd in self._fw.get_all_commands():
+                if cmd.get("cmd"):
+                    result.reply_text = cmd["cmd"]
+
+            result.completed_at = time.time()
+            result.send_duration_sec = round(result.completed_at - result.started_at, 2)
+            result.status = "completed"
+
+            self._emit_session(session_id, "session_status", {
+                "status": "turn_completed",
+                "send_duration_sec": result.send_duration_sec,
+                "audio_duration_sec": result.audio_duration_sec,
+            })
+
+        except Exception as exc:
+            result.status = "error"
+            result.error = str(exc)
+            logger.exception("User turn failed on device %s: %s", self.device_id, exc)
+
+        finally:
+            with self._lock:
+                self._simulating = False
+
+        return result
+
     def run_session(self, wav_path: Path, audio_id: str = "",
                     speed: float = 0, subscribe_response: bool = False) -> SimulationResult:
         """Run a complete session (session → turn → response → session/end) on this device."""
@@ -706,6 +834,7 @@ class SimulationManager:
         mqtt_host: str | None = None,
         mqtt_port: int | None = None,
         mqtt_tls: bool | None = None,
+        skip_auto_intro: bool = False,
     ) -> dict:
         """Connect a device (power_on). Device stays online for multiple sessions."""
         resolved_profile, resolved_env, resolved_host, resolved_port, resolved_tls = _resolve_broker_config(
@@ -790,6 +919,10 @@ class SimulationManager:
         with self._lock:
             self._devices[device_id] = dev
 
+        # Auto-start intro session in background thread (skipped for verification)
+        if not skip_auto_intro:
+            self._trigger_intro_session(dev, device_id)
+
         return {
             "device_id": device_id,
             "status": "connected",
@@ -800,6 +933,7 @@ class SimulationManager:
             "mqtt_host": resolved_host,
             "mqtt_port": resolved_port,
             "mqtt_tls": resolved_tls,
+            "intro": "auto_triggered",
         }
 
     def disconnect_device(self, device_id: str) -> dict:
@@ -826,6 +960,76 @@ class SimulationManager:
                 logger.warning("Device %s thread still alive after 30s timeout, detaching", device_id)
 
         return {"device_id": device_id, "status": "disconnected"}
+
+    def _trigger_intro_session(self, dev: ConnectedDevice, device_id: str):
+        """Launch a background thread to auto-start intro session after device connects."""
+        def _intro_worker():
+            try:
+                sid = dev.start_session_and_await_intro()
+                if sid:
+                    logger.info("Auto intro session completed for device %s: %s", device_id, sid)
+                else:
+                    logger.warning("Auto intro session returned no session for %s", device_id)
+            except Exception as exc:
+                logger.exception("Auto intro session failed for device %s: %s", device_id, exc)
+            finally:
+                with self._lock:
+                    if self._threads.get(device_id) == threading.current_thread():
+                        self._threads.pop(device_id, None)
+
+        thread = threading.Thread(target=_intro_worker, daemon=True, name=f"intro-{device_id}")
+        thread.start()
+        with self._lock:
+            self._threads[device_id] = thread
+
+    def send_user_turn(self, device_id: str, audio_id: str, resolve_audio: Callable[[str], Path | None]) -> dict:
+        """Send a user audio turn on an existing session."""
+        with self._lock:
+            dev = self._devices.get(device_id)
+
+        if dev is None or not dev.is_connected:
+            return {"error": f"Device {device_id} is not connected"}
+
+        audio_path = resolve_audio(audio_id)
+        if audio_path is None:
+            return {"error": f"Audio not found: {audio_id}"}
+        if not audio_path.exists():
+            return {"error": f"Audio file not found: {audio_path}"}
+
+        preliminary_id = secrets.token_urlsafe(9)[:12]
+        self.event_bus.create_queue(preliminary_id)
+
+        session_id_holder = {"value": preliminary_id, "ready": threading.Event()}
+
+        def _run():
+            try:
+                result = dev.send_user_turn(wav_path=audio_path)
+                real_sid = result.session_id or preliminary_id
+                with self._lock:
+                    self._session_aliases[preliminary_id] = real_sid
+                    self._session_aliases[real_sid] = real_sid
+                session_id_holder["value"] = real_sid
+                session_id_holder["ready"].set()
+                self._save_result(result)
+            except Exception as exc:
+                session_id_holder["ready"].set()
+                logger.exception("User turn failed: %s", exc)
+            finally:
+                with self._lock:
+                    if self._threads.get(device_id) == threading.current_thread():
+                        self._threads.pop(device_id, None)
+
+        thread = threading.Thread(target=_run, daemon=True, name=f"turn-{device_id}")
+        thread.start()
+
+        with self._lock:
+            self._threads[device_id] = thread
+
+        session_id_holder["ready"].wait(timeout=15)
+        real_sid = session_id_holder["value"]
+        if real_sid and real_sid != preliminary_id:
+            self.event_bus.alias_queue(preliminary_id, real_sid)
+        return {"session_id": preliminary_id, "status": "turn_started"}
 
     def run_simulation(
         self,
@@ -1053,8 +1257,11 @@ class SimulationManager:
 
         with self._lock:
             dev = self._devices.get(device_id)
-            if dev and dev.is_connected and dev.is_simulating:
+            if dev and dev.is_simulating:
                 dev.stop_current_session()
+                # Force reset simulation flag - stop_current_session is async
+                dev._simulating = False
+                dev._stop_requested = False
 
         if dev and dev.is_connected and dev.is_simulating:
             for _ in range(50):
@@ -1062,7 +1269,8 @@ class SimulationManager:
                 if not dev.is_simulating:
                     break
             else:
-                raise ValueError(f"Device {device_id} already has an active simulation")
+                logger.warning("Device %s still simulating after 5s, force-clearing", device_id)
+                dev._simulating = False
 
         if dev is not None and dev.is_connected:
             needs_reconnect = (
@@ -1087,6 +1295,7 @@ class SimulationManager:
                 mqtt_host=resolved_host,
                 mqtt_port=resolved_port,
                 mqtt_tls=resolved_tls,
+                skip_auto_intro=True,
             )
 
         return self.run_simulation(

@@ -1504,6 +1504,29 @@ def stop_device_simulation(session_id: str):
     return {"session_id": session_id, "stopped": stopped}
 
 
+@app.post("/api/device/send-turn")
+def send_device_turn(req: SimulateRequest):
+    """向已连接的设备发送一段用户音频（使用已有 session）。
+
+    设备必须先 connect，intro 播放完毕后再调用此接口。
+    每调一次发一个 turn，session 保持活性。
+    """
+    if not req.audio_id:
+        return {"error": "audio_id is required"}
+
+    try:
+        result = simulation_manager.send_user_turn(
+            device_id=req.device_id,
+            audio_id=req.audio_id,
+            resolve_audio=_resolve_audio_for_sim,
+        )
+        return result
+    except ValueError as exc:
+        return {"error": str(exc)}
+    except Exception as exc:
+        return {"error": f"发送音频失败: {exc}"}
+
+
 @app.get("/api/device/status")
 def device_simulation_status():
     """查询当前模拟状态。"""
