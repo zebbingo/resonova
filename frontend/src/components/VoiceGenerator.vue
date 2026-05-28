@@ -10,21 +10,14 @@ import {
 import type {
   TTSPreset,
   TTSOptionItem,
+  TTSOptionsResponse,
   TTSRange,
   TTSGenerateResponse,
 } from '../types'
 
 // ── 状态 ──
 
-const options = ref<{
-  genders: TTSOptionItem[]
-  personalities: TTSOptionItem[]
-  emotions: TTSOptionItem[]
-  presets: TTSPreset[]
-  speed_range: TTSRange
-  pitch_range: TTSRange
-  volume_range: TTSRange
-} | null>(null)
+const options = ref<TTSOptionsResponse | null>(null)
 
 const loading = ref(false)
 const result = ref<TTSGenerateResponse | null>(null)

@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, onMounted, onUnmounted } from 'vue'
+import axios from 'axios'
 import type { AudioItem } from '../types'
 import { fetchFigurines } from '../api'
 import DeviceCard from './DeviceCard.vue'
@@ -24,7 +25,46 @@ async function loadFigurineNames() {
     console.error('加载角色列表失败:', error)
   }
 }
-onMounted(() => { loadFigurineNames() })
+
+// ── 轮询后端设备状态 ──────────────────────────────────────
+// 每 20 秒检查一次后端有哪些设备是活跃的，同步 isOnline 状态
+let _statusPollTimer: ReturnType<typeof setInterval> | null = null
+let _deviceCounter = 2
+
+async function pollDeviceStatus() {
+  try {
+    const resp = await axios.get('/api/device/list')
+    const activeDeviceIds = new Set(
+      (resp.data.devices || [])
+        .filter((d: any) => d.connected)
+        .map((d: any) => d.device_id)
+    )
+    for (const device of devices.value) {
+      const wasOnline = device.isOnline
+      device.isOnline = activeDeviceIds.has(device.id)
+      // 如果设备从在线变为离线（被后端回收），更新状态
+      if (wasOnline && !device.isOnline) {
+        console.warn(`[DeviceManager] 设备 ${device.id} 已被后端回收或断线`)
+      }
+    }
+  } catch {
+    // 后端可能暂不可达，静默处理
+  }
+}
+
+onMounted(() => {
+  loadFigurineNames()
+  // 立即轮询一次，然后每 20s 自动轮询
+  pollDeviceStatus()
+  _statusPollTimer = setInterval(pollDeviceStatus, 20_000)
+})
+
+onUnmounted(() => {
+  if (_statusPollTimer !== null) {
+    clearInterval(_statusPollTimer)
+    _statusPollTimer = null
+  }
+})
 
 // 设备列表（最多4个设备）
 interface Device {
@@ -34,6 +74,7 @@ interface Device {
   figurineId: string  // 选择的角色
   mode: 'dialogue' | 'story' | 'music'  // 模式
   isOnline: boolean  // 是否在线
+  mqttProfile: string  // MQTT broker 连接配置文件
 }
 
 const devices = ref<Device[]>([
@@ -43,7 +84,8 @@ const devices = ref<Device[]>([
     expanded: true,
     figurineId: '',
     mode: 'dialogue',
-    isOnline: false
+    isOnline: false,
+    mqttProfile: 'local',
   },
 ])
 
@@ -53,7 +95,7 @@ function addDevice() {
     alert('最多支持 4 个设备')
     return
   }
-  const newId = `device-${devices.value.length + 1}`
+  const newId = `device-${_deviceCounter++}`
   devices.value.push({
     id: newId,
     name: `设备 ${devices.value.length + 1}`,
@@ -61,6 +103,7 @@ function addDevice() {
     figurineId: '',
     mode: 'dialogue',
     isOnline: false,
+    mqttProfile: 'local',
   })
 }
 
@@ -82,12 +125,13 @@ function toggleExpand(deviceId: string) {
 }
 
 // 更新设备状态（由 DeviceCard 触发）
-function updateDeviceStatus(deviceId: string, status: { figurineId?: string; mode?: string; isOnline?: boolean }) {
+function updateDeviceStatus(deviceId: string, status: { figurineId?: string; mode?: string; isOnline?: boolean; mqttProfile?: string }) {
   const device = devices.value.find(d => d.id === deviceId)
   if (device) {
     if (status.figurineId !== undefined) device.figurineId = status.figurineId
     if (status.mode !== undefined) device.mode = status.mode as any
     if (status.isOnline !== undefined) device.isOnline = status.isOnline
+    if (status.mqttProfile !== undefined) device.mqttProfile = status.mqttProfile
   }
 }
 
@@ -105,6 +149,17 @@ function getModeName(mode: string): string {
     'music': '🎵 音乐',
   }
   return names[mode] || '未知'
+}
+
+// 获取 Broker 标签
+function getBrokerLabel(profile: string): string {
+  const labels: Record<string, string> = {
+    'local': '📡 本地',
+    'relay': '🔁 中转',
+    'custom': '⚙️ 自定义',
+    'aws_iot': '☁️ AWS IoT',
+  }
+  return labels[profile] || '📡 ' + profile
 }
 </script>
 
@@ -139,6 +194,9 @@ function getModeName(mode: string): string {
             <span class="summary-item">
               {{ getModeName(device.mode) }}
             </span>
+            <span class="summary-item broker-indicator" :title="'MQTT: ' + device.mqttProfile">
+              {{ getBrokerLabel(device.mqttProfile) }}
+            </span>
             <span class="status-badge" :class="{ online: device.isOnline }">
               {{ device.isOnline ? '🟢 在线' : '⚪ 离线' }}
             </span>
@@ -159,6 +217,7 @@ function getModeName(mode: string): string {
           <DeviceCard
             :audios="audios"
             :format-size="formatSize"
+            :persistence-key="device.id"
             @update-status="updateDeviceStatus(device.id, $event)"
           />
         </div>
@@ -277,6 +336,14 @@ function getModeName(mode: string): string {
 .status-badge.online {
   background: #d1fae5;
   color: #065f46;
+}
+
+.broker-indicator {
+  font-size: 0.75rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: #1a1a2a;
+  color: #a78bfa;
 }
 
 .btn-remove {

@@ -16,7 +16,7 @@ function formatTime(date: Date): string {
 
 /** 获取消息类型标签 */
 function getTypeLabel(type: MQTTMessageLog['type']): string {
-  const labels: Record<MQTTMessageLog['type'], string> = {
+  const labels: Partial<Record<MQTTMessageLog['type'], string>> = {
     session_start: '📡 SESSION',
     audio_start: '🎵 AUDIO',
     chunk: '📦 CHUNK',

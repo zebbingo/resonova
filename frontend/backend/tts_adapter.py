@@ -1,0 +1,1 @@
+/mnt/d/zebbingo/projects/stt-test-tool/backend/tts_adapter.py

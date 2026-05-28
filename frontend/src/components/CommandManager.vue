@@ -74,6 +74,13 @@ const error = ref('')
 const successMsg = ref('')
 const activeTab = ref<TabKey>('kws')
 
+const chatbotConfigLoading = ref(false)
+const chatbotConfigSaving = ref(false)
+const chatbotConfigError = ref('')
+const chatbotConfigSuccess = ref('')
+const chatbotConfigPath = ref('')
+const chatbotConfigText = ref('')
+
 /** 完整的指令数据集 */
 const data = reactive<CommandsData>({
   kws_keywords: [],
@@ -204,6 +211,69 @@ async function loadCommands() {
     error.value = `加载指令配置失败: ${e.message}`
   } finally {
     loading.value = false
+  }
+}
+
+/** 加载 chatbot 的命令 YAML 配置 */
+async function loadChatbotConfig() {
+  chatbotConfigLoading.value = true
+  chatbotConfigError.value = ''
+  try {
+    const res = await fetch(`${baseURL}/api/command-config/chatbot`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const json = await res.json()
+    chatbotConfigPath.value = json.path || ''
+    chatbotConfigText.value = json.content || ''
+  } catch (e: any) {
+    chatbotConfigError.value = `加载 chatbot 配置失败: ${e.message}`
+  } finally {
+    chatbotConfigLoading.value = false
+  }
+}
+
+/** 替换 chatbot 的命令 YAML 配置 */
+async function saveChatbotConfig() {
+  chatbotConfigSaving.value = true
+  chatbotConfigError.value = ''
+  chatbotConfigSuccess.value = ''
+  try {
+    const res = await fetch(`${baseURL}/api/command-config/chatbot`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content: chatbotConfigText.value }),
+    })
+    if (!res.ok) {
+      const body = await res.text()
+      throw new Error(`HTTP ${res.status}: ${body}`)
+    }
+    const result = await res.json()
+    chatbotConfigPath.value = result.path || chatbotConfigPath.value
+    chatbotConfigSuccess.value = `已替换 chatbot 配置: ${result.path}`
+    setTimeout(() => chatbotConfigSuccess.value = '', 3000)
+  } catch (e: any) {
+    chatbotConfigError.value = `替换 chatbot 配置失败: ${e.message}`
+  } finally {
+    chatbotConfigSaving.value = false
+  }
+}
+
+/** 导出 chatbot 的命令 YAML 配置 */
+async function exportChatbotConfig() {
+  chatbotConfigError.value = ''
+  try {
+    const res = await fetch(`${baseURL}/api/command-config/chatbot/export`)
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const blob = await res.blob()
+    const url = window.URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = chatbotConfigPath.value ? chatbotConfigPath.value.split(/[\\/]/).pop() || 'voice_commands.yaml' : 'voice_commands.yaml'
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+    window.URL.revokeObjectURL(url)
+  } catch (e: any) {
+    chatbotConfigError.value = `导出 chatbot 配置失败: ${e.message}`
   }
 }
 
@@ -382,6 +452,7 @@ function toggleTag(key: string, value: string, checked: boolean) {
 
 onMounted(() => {
   loadCommands()
+  loadChatbotConfig()
 })
 
 // ── 辅助: 从 editor 标记 dirty ────────────────────────────
@@ -418,8 +489,41 @@ function markDirty() {
     <!-- 状态消息 -->
     <div v-if="error" class="cm-alert cm-alert-error">{{ error }}</div>
     <div v-if="successMsg" class="cm-alert cm-alert-success">{{ successMsg }}</div>
+    <div v-if="chatbotConfigError" class="cm-alert cm-alert-error">{{ chatbotConfigError }}</div>
+    <div v-if="chatbotConfigSuccess" class="cm-alert cm-alert-success">{{ chatbotConfigSuccess }}</div>
 
     <div v-if="loading" class="cm-loading">加载中...</div>
+
+    <div v-if="chatbotConfigLoading" class="cm-loading">正在读取 chatbot 命令配置...</div>
+
+    <div class="cm-bridge-panel">
+      <div class="cm-bridge-header">
+        <div>
+          <h3>🤝 Chatbot 命令配置桥</h3>
+          <div class="cm-bridge-subtitle">
+            直接读写 chatbot 的 voice_commands.yaml
+            <span v-if="chatbotConfigPath" class="cm-bridge-path">· {{ chatbotConfigPath }}</span>
+          </div>
+        </div>
+        <div class="cm-bridge-actions">
+          <button class="cm-btn cm-btn-small cm-btn-secondary" :disabled="chatbotConfigLoading" @click="loadChatbotConfig">
+            📥 读取
+          </button>
+          <button class="cm-btn cm-btn-small cm-btn-primary" :disabled="chatbotConfigSaving" @click="saveChatbotConfig">
+            {{ chatbotConfigSaving ? '替换中...' : '🔁 替换配置' }}
+          </button>
+          <button class="cm-btn cm-btn-small cm-btn-outline" @click="exportChatbotConfig">
+            📤 导出
+          </button>
+        </div>
+      </div>
+      <textarea
+        v-model="chatbotConfigText"
+        class="cm-bridge-textarea"
+        placeholder="读取 chatbot 的 voice_commands.yaml 后会显示在这里。你可以直接替换整份 YAML，然后保存回 chatbot。"
+        spellcheck="false"
+      />
+    </div>
 
     <template v-if="!loading">
       <!-- Tab 导航 -->
@@ -1122,5 +1226,58 @@ code.cm-hex {
   white-space: pre-wrap;
   word-break: break-all;
   background: transparent;
+}
+
+/* Chatbot config bridge */
+.cm-bridge-panel {
+  background: var(--surface, #1a1d27);
+  border: 1px solid var(--border, #2e3348);
+  border-radius: var(--radius, 8px);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+.cm-bridge-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border, #2e3348);
+  background: var(--surface2, #242838);
+}
+.cm-bridge-header h3 {
+  margin: 0;
+  font-size: 0.9rem;
+}
+.cm-bridge-subtitle {
+  font-size: 0.75rem;
+  color: var(--text3, #6a7088);
+  margin-top: 3px;
+}
+.cm-bridge-path {
+  word-break: break-all;
+}
+.cm-bridge-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.cm-bridge-textarea {
+  width: 100%;
+  min-height: 220px;
+  box-sizing: border-box;
+  border: none;
+  outline: none;
+  resize: vertical;
+  padding: 14px;
+  font-family: 'Cascadia Code', 'Fira Code', monospace;
+  font-size: 0.75rem;
+  line-height: 1.6;
+  color: var(--text, #e4e6f0);
+  background: #11141b;
+}
+.cm-bridge-textarea::placeholder {
+  color: var(--text3, #6a7088);
 }
 </style>

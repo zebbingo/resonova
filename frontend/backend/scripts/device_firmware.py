@@ -1,1 +1,1 @@
-D:/zebbingo/projects/stt-test-tool/backend/scripts/device_firmware.py
+/mnt/d/zebbingo/projects/stt-test-tool/backend/scripts/device_firmware.py

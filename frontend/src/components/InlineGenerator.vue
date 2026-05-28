@@ -42,6 +42,7 @@ async function handleGenerate() {
       speed: speed.value,
       pitch: pitch.value,
       volume: volume.value,
+      language: 'zh',
       save_to_db: true,
       figurine_id: props.figurineId,
     })

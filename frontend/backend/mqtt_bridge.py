@@ -1,1 +1,1 @@
-D:/zebbingo/projects/stt-test-tool/backend/mqtt_bridge.py
+/mnt/d/zebbingo/projects/stt-test-tool/backend/mqtt_bridge.py
