@@ -15,3 +15,11 @@ backend/scripts/devices/
 backend/*.txt
 backend/test_vc_result.txt
 backend/voice_chain_integration_test.py
+
+# .env 文件和本地配置
+.env
+.env.local
+.env.*.local
+
+# 旧打包备份
+dist_bak_old/
