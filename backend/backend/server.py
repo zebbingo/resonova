@@ -3,7 +3,6 @@
 
 import asyncio
 import base64
-import importlib.util
 import json
 import logging
 import os
@@ -17,18 +16,25 @@ import uuid
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
-import types
+
 
 import soundfile as sf
 import uvicorn
 import numpy as np
 import pcm_utils
+import env_scanner
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+# ── YAML 驱动的指令规则引擎 ─────────────────────────────
+from command_engine import get_engine, reload_engine, RuleMatch
+
+# ── 指令使用统计收集器 ─────────────────────────────
+from command_stats import get_collector as _command_stats_collector
 
 # ── 环境变量配置 ──────────────────────────────────────
 # ⚠️ 测试平台所有配置仅从 stt-test-tool/.env 读取
@@ -48,54 +54,17 @@ ENVIRONMENT = os.getenv("ENVIRONMENT", "test")  # test / production
 # ── MQTT 设备模拟 ──────────────────────────────────────
 from mqtt_bridge import simulation_manager, SimulationManager
 
-# ── 注入 chatbot 项目路径 ──────────────────────────────────
-# backend/server.py -> backend/chatbot_src (symlink to ../../chatbot/src)
-_CHATBOT_SRC = Path(__file__).resolve().parent / "chatbot_src"
-
-sys.path.insert(0, str(_CHATBOT_SRC))
-
-# ── STT 识别导入 ──────────────────────────────────────────
-from libs.paths import project_root
-try:
-    from pipecat.transcriptions.language import Language
-except ModuleNotFoundError:
-    from enum import Enum
-
-    class Language(Enum):
-        ZH = "zh"
-        EN = "en"
-        JA = "ja"
-        KO = "ko"
-        YUE = "yue"
-        ZH_HK = "zh-hk"
-
-    _pipecat_module = types.ModuleType("pipecat")
-    _transcriptions_module = types.ModuleType("pipecat.transcriptions")
-    _language_module = types.ModuleType("pipecat.transcriptions.language")
-    _language_module.Language = Language
-    _transcriptions_module.language = _language_module
-    _pipecat_module.transcriptions = _transcriptions_module
-    sys.modules.setdefault("pipecat", _pipecat_module)
-    sys.modules.setdefault("pipecat.transcriptions", _transcriptions_module)
-    sys.modules.setdefault("pipecat.transcriptions.language", _language_module)
-
-_ASR_FACTORY_PATH = _CHATBOT_SRC / "processors" / "asr" / "asr_factory.py"
-_ASR_FACTORY = None
+# ── Language 枚举（独立，不依赖 chatbot 项目） ──────────────
+from enum import Enum
 
 
-def _get_asr_factory():
-    global _ASR_FACTORY
-    if _ASR_FACTORY is None:
-        asr_spec = importlib.util.spec_from_file_location("_stt_test_asr_factory", _ASR_FACTORY_PATH)
-        if asr_spec is None or asr_spec.loader is None:
-            raise ImportError(f"Unable to load ASR factory from {_ASR_FACTORY_PATH}")
-        module = importlib.util.module_from_spec(asr_spec)
-        try:
-            asr_spec.loader.exec_module(module)
-        except ModuleNotFoundError as exc:
-            raise RuntimeError(f"ASR dependencies unavailable: {exc}") from exc
-        _ASR_FACTORY = module
-    return _ASR_FACTORY
+class Language(Enum):
+    ZH = "zh"
+    EN = "en"
+    JA = "ja"
+    KO = "ko"
+    YUE = "yue"
+    ZH_HK = "zh-hk"
 
 
 def load_offline_recognizer_from_cache(*args, **kwargs):
@@ -173,7 +142,6 @@ def _build_runtime_config_snapshot() -> dict:
             "exists": _ENV_FILE.exists(),
         },
         "paths": {
-            "chatbot_src": str(_CHATBOT_SRC),
             "frontend_dist_exists": _FRONTEND_DIST.exists(),
             "audio_cache": str(CACHE_DIR),
         },
@@ -208,7 +176,15 @@ app.add_middleware(
 
 
 @app.on_event("startup")
-def log_runtime_config():
+def startup_init():
+    """Initialize runtime components on app startup."""
+    # 初始化 YAML 驱动的指令规则引擎
+    try:
+        count = get_engine().load()
+        logger.info("CommandRuleEngine initialized: %d rules loaded", count)
+    except Exception as exc:
+        logger.warning("CommandRuleEngine init failed (non-fatal): %s", exc)
+
     snapshot = _build_runtime_config_snapshot()
     logger.info(
         "Runtime config loaded: env=%s mysql=%s/%s env_file=%s frontend_dist_exists=%s",
@@ -225,12 +201,10 @@ def runtime_config():
     """Return a sanitized snapshot of the backend runtime configuration."""
     return _build_runtime_config_snapshot()
 
-# ── 路径常量 ──────────────────────────────────────────────
-MODEL_NAME = "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17"
-CHATBOT_PROJECT_ROOT = project_root()
-MODEL_PATH = CHATBOT_PROJECT_ROOT / "models" / MODEL_NAME
-TEST_WAVS_DIR = MODEL_PATH / "test_wavs"
-CHATBOT_TESTDATA = Path(_CHATBOT_SRC).parent / "tests" / "asr" / "testdata"
+# ── 路径常量（通过环境变量配置，不依赖 chatbot 项目路径） ──
+MODEL_NAME = os.getenv("STT_MODEL_NAME", "sherpa-onnx-sense-voice-zh-en-ja-ko-yue-2024-07-17")
+MODEL_DIR = Path(os.getenv("STT_MODEL_DIR", "models")) / MODEL_NAME
+TEST_WAVS_DIR = MODEL_DIR / "test_wavs"
 CACHE_DIR = Path(__file__).parent / "audio_cache"
 
 
@@ -482,8 +456,18 @@ def _query_db_figurines_with_media_counts():
         # 批量查询每个角色的故事和音乐数量
         figurine_ids = [f["figurine_id"] for f in figurines]
         if figurine_ids:
-            # 查询故事数量 (MediaType = 0)
             placeholders = ",".join(["%s"] * len(figurine_ids))
+            
+            # 查询开场白配置状态（按 CharacterName 匹配）
+            cur.execute(f"""
+                SELECT f.FigurineId
+                FROM ZebFigurineIntroductions i
+                JOIN ZebFigurineInfo f ON f.CharacterName = i.figurine_id
+                WHERE f.FigurineId IN ({placeholders})
+            """, figurine_ids)
+            intro_set = {row[0] for row in cur.fetchall()}
+            
+            # 查询故事数量 (MediaType = 0)
             cur.execute(f"""
                 SELECT p.FigurineId, COUNT(DISTINCT m.Id) as story_count
                 FROM ZebMedia m
@@ -517,6 +501,7 @@ def _query_db_figurines_with_media_counts():
             for fig in figurines:
                 fig["story_count"] = story_counts.get(fig["figurine_id"], 0)
                 fig["music_count"] = music_counts.get(fig["figurine_id"], 0)
+                fig["has_intro"] = fig["figurine_id"] in intro_set
         
         cur.close()
         conn.close()
@@ -723,7 +708,6 @@ def list_test_audios():
     audios = []
     # 暂时注释掉本地 WAV 扫描，只返回数据库音频
     # audios += _scan_wavs(TEST_WAVS_DIR, "model")
-    # audios += _scan_wavs(CHATBOT_TESTDATA, "testdata")
     # 3) 数据库中的真实音频
     audios += _scan_db_audios()
 
@@ -933,7 +917,6 @@ def serve_audio(audio_id: str):
     # 本地 WAV
     base_map = {
         "model": TEST_WAVS_DIR,
-        "testdata": CHATBOT_TESTDATA,
     }
     base_dir = base_map.get(prefix)
     if base_dir is None:
@@ -1013,7 +996,6 @@ def stt_transcribe(req: TranscribeRequest):
         else:
             base_map = {
                 "model": TEST_WAVS_DIR,
-                "testdata": CHATBOT_TESTDATA,
             }
             base_dir = base_map.get(prefix)
             if not base_dir:
@@ -1056,6 +1038,10 @@ class SimulateRequest(BaseModel):
     mqtt_host: str | None = None
     mqtt_port: int | None = None
     mqtt_tls: bool | None = None
+    mqtt_tls_ca_cert: str | None = None
+    mqtt_tls_client_cert: str | None = None
+    mqtt_tls_client_key: str | None = None
+    mqtt_tls_insecure: bool | None = None
 
 
 class SimulateResponse(BaseModel):
@@ -1092,7 +1078,6 @@ def stt_vad_transcribe(req: VadTranscribeRequest):
     else:
         base_map = {
             "model": TEST_WAVS_DIR,
-            "testdata": CHATBOT_TESTDATA,
         }
         base_dir = base_map.get(prefix)
         if base_dir:
@@ -1279,92 +1264,33 @@ class TestCommandRequest(BaseModel):
     mode: str = "dialogue"  # dialogue | story | spark | song | unknown
 
 
-_DIAGNOSTIC_MODE_DIALOGUE = frozenset({"dialogue"})
-_DIAGNOSTIC_MODE_GLOBAL = frozenset({"dialogue", "unknown"})
-_DIAGNOSTIC_RULES = [
-    (
-        re.compile(
-            r"(大声一点|大点声|声音大一点|声音大些|音量.*大.*点|音量.*调大|调大.*音量|把.*音量.*调大|"
-            r"音量加一[格档]|音量.?\+.?1|"
-            r"volume\s*up|turn\s*it\s*up|louder|increase\s*volume|加[大高].*音量)",
-            re.IGNORECASE,
-        ),
-        "VOLUME_UP",
-        "adjust_volume",
-        _DIAGNOSTIC_MODE_GLOBAL,
-    ),
-    (
-        re.compile(
-            r"(小声一点|小点声|声音小一点|声音小些|音量.*小.*点|音量.*调小|调小.*音量|把.*音量.*调小|"
-            r"音量减一[格档]|音量.?-.?1|"
-            r"volume\s*down|turn\s*it\s*down|quieter|decrease\s*volume|减[小低].*音量)",
-            re.IGNORECASE,
-        ),
-        "VOLUME_DOWN",
-        "adjust_volume",
-        _DIAGNOSTIC_MODE_GLOBAL,
-    ),
-    (
-        re.compile(
-            r"(停止(?:播放)?|别播(?:放了)?|别说了|不要(?:再(?:讲|播放)|播放)了|停下|够了|闭嘴|"
-            r"stop(\s*(playing|it|this))?|shut\s*up|enough|cancel)",
-            re.IGNORECASE,
-        ),
-        "PLAYBACK_STOP",
-        "stop_playback",
-        _DIAGNOSTIC_MODE_GLOBAL,
-    ),
-    (
-        re.compile(r"(下一首|下一曲|next(\s*track)?|skip(\s*track)?|go\s*next)", re.IGNORECASE),
-        "PLAYBACK_NEXT",
-        "next",
-        _DIAGNOSTIC_MODE_DIALOGUE,
-    ),
-    (
-        re.compile(r"(上一首|上一曲|previous(\s*track)?|go\s*back|back)", re.IGNORECASE),
-        "PLAYBACK_PREVIOUS",
-        "previous",
-        _DIAGNOSTIC_MODE_DIALOGUE,
-    ),
-    (
-        re.compile(r"(暂停(?:一下)?|停一下|先停(?:一下)?|pause|hold\s*on|freeze|take\s*a\s*break)", re.IGNORECASE),
-        "PLAYBACK_PAUSE",
-        "pause",
-        _DIAGNOSTIC_MODE_DIALOGUE,
-    ),
-    (
-        re.compile(
-            r"(继续(?:播放|讲|唱|放)?|接着(?:播放|讲|唱|放|说)|恢复播放|go\s*on|"
-            r"resume|continue(\s*(playing|story|music|song))?)",
-            re.IGNORECASE,
-        ),
-        "PLAYBACK_RESUME",
-        "resume",
-        _DIAGNOSTIC_MODE_DIALOGUE,
-    ),
-]
-
-
 @app.post("/api/device/test-command")
 def test_voice_command(req: TestCommandRequest):
-    """Verify whether a text command would be matched by the router."""
+    """Verify whether a text command would be matched by the router.
 
+    Uses the YAML-driven CommandRuleEngine (from commands.yaml) instead of
+    the previously hardcoded _DIAGNOSTIC_RULES list.
+    """
     text = req.text.strip()
     if not text:
         return {"error": "text is required"}
 
     pass_through_mode = req.mode in ("story", "spark", "song")
-    matched_rules = []
+    engine = get_engine()
+    matches = engine.match(text, req.mode)
 
-    for pattern, intent, command, modes in _DIAGNOSTIC_RULES:
-        if pass_through_mode:
-            if req.mode not in modes:
-                continue
-            continue
-        if req.mode not in modes:
-            continue
-        if pattern.search(text):
-            matched_rules.append({"intent": intent, "command": command})
+    matched_rules = [
+        {"intent": m.intent, "command": m.command, "rule_id": m.rule_id}
+        for m in matches
+    ]
+
+    note = (
+        "pass-through modes (story/spark/song) forward all text to LLM; "
+        "commands are handled by the device locally"
+        if pass_through_mode
+        else "in dialogue mode, matched commands emit MqttCommandFrame and are "
+             "stripped from the transcription sent to LLM"
+    )
 
     return {
         "matched": len(matched_rules) > 0,
@@ -1372,11 +1298,9 @@ def test_voice_command(req: TestCommandRequest):
         "session_mode": req.mode,
         "pass_through": pass_through_mode,
         "rules_matched": matched_rules,
-        "note": (
-            "pass-through modes (story/spark/song) forward all text to LLM; commands are handled by the device locally"
-            if pass_through_mode
-            else "in dialogue mode, matched commands emit MqttCommandFrame and are stripped from the transcription sent to LLM"
-        ),
+        "engine": "yaml",
+        "rules_loaded": engine.rule_count,
+        "note": note,
     }
 
 
@@ -1393,6 +1317,10 @@ class DeviceConnectRequest(BaseModel):
     mqtt_host: str | None = None
     mqtt_port: int | None = None
     mqtt_tls: bool | None = None
+    mqtt_tls_ca_cert: str | None = None
+    mqtt_tls_client_cert: str | None = None
+    mqtt_tls_client_key: str | None = None
+    mqtt_tls_insecure: bool | None = None
 
 
 @app.post("/api/device/connect")
@@ -1409,6 +1337,10 @@ def connect_device(req: DeviceConnectRequest):
             mqtt_host=req.mqtt_host,
             mqtt_port=req.mqtt_port,
             mqtt_tls=req.mqtt_tls,
+            mqtt_tls_ca_cert=req.mqtt_tls_ca_cert,
+            mqtt_tls_client_cert=req.mqtt_tls_client_cert,
+            mqtt_tls_client_key=req.mqtt_tls_client_key,
+            mqtt_tls_insecure=req.mqtt_tls_insecure,
         )
         return result
     except ConnectionError as exc:
@@ -1423,6 +1355,52 @@ def disconnect_device(device_id: str):
     return simulation_manager.disconnect_device(device_id)
 
 
+@app.get("/api/device/list")
+def list_devices():
+    """返回所有活跃设备列表，供前端轮询刷新设备状态。
+
+    返回格式:
+      {
+        "devices": [
+          {
+            "device_id": "...",
+            "connected": true/false,
+            "simulating": true/false,
+            "mqtt_profile": "local",
+            "figurine_id": "doctor",
+            "mode": "dialogue",
+            "last_seen_sec": 5,
+            "is_stale": false,
+          },
+          ...
+        ],
+        "count": 1,
+        "max_devices": 4,
+      }
+    """
+    active = simulation_manager.get_active_sessions()
+    devices_list = []
+    for d in active:
+        status = simulation_manager.get_device_status(d["device_id"])
+        if status:
+            devices_list.append({
+                "device_id": status["device_id"],
+                "connected": status["connected"],
+                "simulating": status.get("simulating", False),
+                "mqtt_profile": status.get("mqtt_profile", "local"),
+                "figurine_id": d.get("figurine_id", ""),
+                "mode": d.get("mode", ""),
+                "last_seen_sec": status.get("last_seen_sec", 0),
+                "is_stale": status.get("is_stale", False),
+            })
+
+    return {
+        "devices": devices_list,
+        "count": len(devices_list),
+        "max_devices": SimulationManager.MAX_DEVICES,
+    }
+
+
 @app.get("/api/device/status/{device_id}")
 def device_status(device_id: str):
     """查询单个设备的连接和模拟状态。"""
@@ -1432,11 +1410,37 @@ def device_status(device_id: str):
     return status
 
 
+@app.post("/api/device/keepalive/{device_id}")
+def device_keepalive(device_id: str):
+    """前端定期调用此接口更新设备活跃时间，避免被后端作为过期设备回收。"""
+    dev = simulation_manager.devices.get(device_id)
+    if dev is None:
+        return {"error": "device not found", "device_id": device_id}
+    dev.touch_seen()
+    return {"device_id": device_id, "status": "alive"}
+
+
 @app.websocket("/ws/device/{device_id}")
 async def ws_device_events(websocket: WebSocket, device_id: str):
-    """WebSocket 实时推送设备级事件（连接状态、command、cue 等）。"""
+    """WebSocket 实时推送设备级事件。
+
+    与旧版不同：
+      - 前端 WS 断开后不再马上销毁设备（避免页面刷新丢设备）
+      - 设备由 keepalive 超时 + cleanup 线程接管过期回收
+      - 如再次连接同一 device_id，WS 队列自动重建
+    """
     await websocket.accept()
+
+    # 如果 device_id 对应的后端设备不存在，3s 后关闭 WS
+    dev = simulation_manager.devices.get(device_id)
+    if dev is None:
+        await asyncio.sleep(3)
+        await websocket.close(code=4004, reason="device_not_found")
+        return
+
     event_queue = simulation_manager.event_bus.create_queue(device_id)
+    dev.touch_seen()
+
     try:
         while True:
             events = []
@@ -1453,7 +1457,48 @@ async def ws_device_events(websocket: WebSocket, device_id: str):
                     pass
             await asyncio.sleep(0.05)
     except WebSocketDisconnect:
+        logger.info("Device %s WebSocket disconnected (device stays alive)", device_id)
+    finally:
+        simulation_manager.event_bus.remove_queue(device_id)
+
+
+# ── 系统级事件 WebSocket（设备回收通知等）────────────────────
+_system_ws_clients: list[WebSocket] = []
+
+
+@app.websocket("/ws/system")
+async def ws_system_events(websocket: WebSocket):
+    """系统级事件广播（设备被回收、资源耗尽等）。
+
+    前端应在应用启动时连接此端点，接收 device_evicted 等通知。
+    """
+    await websocket.accept()
+    _system_ws_clients.append(websocket)
+    queue_key = f"_system_ws_{id(websocket)}"
+    event_queue = simulation_manager.event_bus.create_queue(queue_key)
+    # 别名到 _system 频道 —— 接收全局系统事件
+    simulation_manager.event_bus.alias_queue("_system", queue_key)
+
+    try:
+        while True:
+            events = []
+            while True:
+                try:
+                    events.append(event_queue.get_nowait())
+                except queue.Empty:
+                    break
+            for event in events:
+                try:
+                    await websocket.send_json(event)
+                except Exception:
+                    pass
+            await asyncio.sleep(0.5)
+    except WebSocketDisconnect:
         pass
+    finally:
+        simulation_manager.event_bus.remove_queue(queue_key)
+        if websocket in _system_ws_clients:
+            _system_ws_clients.remove(websocket)
 
 
 @app.post("/api/device/simulate")
@@ -1481,6 +1526,10 @@ def start_device_simulation(req: SimulateRequest):
             mqtt_host=req.mqtt_host,
             mqtt_port=req.mqtt_port,
             mqtt_tls=req.mqtt_tls,
+            mqtt_tls_ca_cert=req.mqtt_tls_ca_cert,
+            mqtt_tls_client_cert=req.mqtt_tls_client_cert,
+            mqtt_tls_client_key=req.mqtt_tls_client_key,
+            mqtt_tls_insecure=req.mqtt_tls_insecure,
         )
     except ValueError as exc:
         return {"error": str(exc)}
@@ -2615,6 +2664,13 @@ def get_figurine_generated_audios(figurine_id: str):
 # ── 指令 YAML 配置管理 ────────────────────────────────────────
 
 COMMANDS_YAML_PATH = Path(__file__).resolve().parent / "commands.yaml"
+VOICE_COMMANDS_YAML_ENV = "VOICE_COMMANDS_YAML_PATH"
+CHATBOT_VOICE_COMMANDS_YAML_PATH = Path(
+    os.getenv(
+        VOICE_COMMANDS_YAML_ENV,
+        str(Path(__file__).resolve().parents[2] / "chatbot" / "src" / "processors" / "intent" / "definitions" / "voice_commands.yaml"),
+    )
+).expanduser().resolve()
 import yaml
 
 @app.get("/api/commands")
@@ -2644,12 +2700,25 @@ class SaveCommandsRequest(BaseModel):
     command_filters: list = []
 
 
+class ChatbotVoiceCommandsPayload(BaseModel):
+    content: str = ""
+
+
+def _read_chatbot_voice_commands_yaml() -> str:
+    if not CHATBOT_VOICE_COMMANDS_YAML_PATH.exists():
+        return ""
+    return CHATBOT_VOICE_COMMANDS_YAML_PATH.read_text(encoding="utf-8")
+
+
+def _write_chatbot_voice_commands_yaml(content: str) -> Path:
+    CHATBOT_VOICE_COMMANDS_YAML_PATH.parent.mkdir(parents=True, exist_ok=True)
+    CHATBOT_VOICE_COMMANDS_YAML_PATH.write_text(content, encoding="utf-8")
+    return CHATBOT_VOICE_COMMANDS_YAML_PATH
+
+
 @app.post("/api/commands/save")
 def save_commands(req: SaveCommandsRequest):
-    """保存指令 YAML 配置。
-
-    将前端编辑后的指令数据写回 commands.yaml 文件。
-    """
+    """保存指令 YAML 配置，保存后自动触发热重载。"""
     data = {
         "kws_keywords": req.kws_keywords,
         "command_intents": req.command_intents,
@@ -2658,7 +2727,79 @@ def save_commands(req: SaveCommandsRequest):
     }
     with open(COMMANDS_YAML_PATH, "w", encoding="utf-8") as f:
         yaml.dump(data, f, allow_unicode=True, default_flow_style=False, sort_keys=False)
-    return {"success": True, "path": str(COMMANDS_YAML_PATH)}
+
+    # ── 自动热重载指令规则引擎 ──
+    try:
+        rule_count = reload_engine(str(COMMANDS_YAML_PATH))
+        logger.info("Command rules reloaded after save: %d rules", rule_count)
+    except Exception as exc:
+        logger.warning("Command rules reload after save failed: %s", exc)
+
+    return {
+        "success": True,
+        "path": str(COMMANDS_YAML_PATH),
+        "rules_reloaded": True,
+    }
+
+
+@app.post("/api/commands/reload")
+def reload_command_rules():
+    """手动触发指令规则引擎重载（从 commands.yaml 重新加载）。"""
+    try:
+        rule_count = reload_engine(str(COMMANDS_YAML_PATH))
+        return {
+            "success": True,
+            "rules_loaded": rule_count,
+            "load_count": get_engine().load_count,
+        }
+    except Exception as exc:
+        logger.error("Command rules reload failed: %s", exc)
+        return {"success": False, "error": str(exc)}
+
+
+@app.get("/api/commands/stats")
+def get_command_stats():
+    """获取指令使用统计。
+
+    从监控事件中收集的统计数据，包括：
+    - total_matches: 总匹配次数
+    - rules: 每个指令规则的命中次数
+    - by_mode: 按会话模式分组的统计
+    """
+    try:
+        return _command_stats_collector().get_summary()
+    except Exception as exc:
+        logger.error("Command stats error: %s", exc, exc_info=True)
+        return {"success": False, "error": str(exc)}
+
+
+@app.get("/api/command-config/chatbot")
+def get_chatbot_command_config():
+    """Read the chatbot voice command YAML as a raw editable config file."""
+    return {
+        "path": str(CHATBOT_VOICE_COMMANDS_YAML_PATH),
+        "exists": CHATBOT_VOICE_COMMANDS_YAML_PATH.exists(),
+        "content": _read_chatbot_voice_commands_yaml(),
+    }
+
+
+@app.put("/api/command-config/chatbot")
+def replace_chatbot_command_config(payload: ChatbotVoiceCommandsPayload):
+    """Replace the chatbot voice command YAML with raw file contents."""
+    path = _write_chatbot_voice_commands_yaml(payload.content)
+    return {"success": True, "path": str(path)}
+
+
+@app.get("/api/command-config/chatbot/export")
+def export_chatbot_command_config():
+    """Export the chatbot voice command YAML as a download-friendly response."""
+    content = _read_chatbot_voice_commands_yaml()
+    filename = CHATBOT_VOICE_COMMANDS_YAML_PATH.name
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "X-Config-Path": str(CHATBOT_VOICE_COMMANDS_YAML_PATH),
+    }
+    return Response(content=content, media_type="text/yaml; charset=utf-8", headers=headers)
 
 
 # ── 监控 WebSocket 端点 ──────────────────────────────────────
@@ -2770,10 +2911,16 @@ def _evaluate_and_transform_event(raw_event: dict) -> dict:
         transformed = _transform_vad_event(transformed)
     elif event_type == "kws_match":
         transformed = _transform_kws_event(transformed)
+        try: _command_stats_collector().record_event(transformed)
+        except: pass
     elif event_type == "command_detected":
         transformed = _transform_command_detected_event(transformed)
+        try: _command_stats_collector().record_event(transformed)
+        except: pass
     elif event_type == "command_forwarded":
         transformed = _transform_command_forwarded_event(transformed)
+        try: _command_stats_collector().record_event(transformed)
+        except: pass
     elif event_type == "mqtt_publish":
         transformed = _transform_mqtt_event(transformed)
     
@@ -2991,7 +3138,486 @@ async def websocket_monitoring_events(websocket: WebSocket):
         logger.error(f"Frontend monitoring WebSocket error: {e}")
 
 
-# ── SPA 兜底路由（所有非 API 请求返回 index.html）───────────────
+# ── 服务管理 ──────────────────────────────────────
+
+_SERVICE_SCRIPT = "/mnt/d/zebbingo/scripts/start-local-dev.sh"
+
+_SERVICE_INFO = {
+    "bot_runner": {"name": "Bot 运行器", "display_name": "bot_runner", "port": 7860, "log": "/tmp/start-local-dev/logs/bot_runner.log", "suites": ["all", "chatbot"]},
+    "stt_backend": {"name": "STT 后端", "display_name": "stt backend", "port": 8765, "log": "/tmp/start-local-dev/logs/stt_backend.log", "suites": ["all", "stt"]},
+    "frontend_dev": {"name": "前端开发服务器", "display_name": "frontend dev", "port": 3000, "log": "/tmp/start-local-dev/logs/frontend_dev.log", "suites": ["all", "chatbot"]},
+    "mqtt_worker": {"name": "MQTT 工作者", "display_name": "mqtt worker", "port": None, "log": "/tmp/start-local-dev/logs/mqtt_worker.log", "suites": ["all", "chatbot"]},
+}
+
+# ── 服务注释与环境变量说明 ──────────────────────────
+
+_SERVICE_ANNOTATIONS = {
+    "bot_runner": {
+        "description": "Chatbot 主应用后端，处理设备语音会话全链路（STT→LLM→TTS），监听端口 :7860",
+        "sensitive_env": [],
+        "env_vars": [
+            {"key": "CHATBOT_MQTT_ENV", "description": "MQTT 环境标识", "default": "prod"},
+            {"key": "CHATBOT_MQTT_HOST", "description": "MQTT Broker 地址（127.0.0.1 = 本地 Mosquitto）", "default": "127.0.0.1"},
+            {"key": "CHATBOT_MQTT_PORT", "description": "MQTT Broker 端口", "default": "1883"},
+            {"key": "BOT_RUNNER_PORT", "description": "服务监听端口", "default": "7860"},
+        ],
+    },
+    "stt_backend": {
+        "description": "STT 测试平台 — ASR 离线识别 + TTS 语音生成 + MQTT 设备模拟，监听端口 :8765",
+        "sensitive_env": [],
+        "env_vars": [
+            {"key": "STT_PORT", "description": "后端监听端口", "default": "8765"},
+            {"key": "MYSQL_HOST", "description": "MySQL 数据库地址", "default": "localhost"},
+            {"key": "MYSQL_USER", "description": "数据库用户", "default": "chatbot"},
+            {"key": "MYSQL_DATABASE", "description": "数据库名", "default": "ZebbieDb"},
+            {"key": "AWS_REGION", "description": "AWS 区域", "default": "eu-west-2"},
+        ],
+    },
+    "frontend_dev": {
+        "description": "Chatbot Vue 3 前端开发服务器（Vite HMR），监听端口 :3000",
+        "sensitive_env": [],
+        "env_vars": [
+            {"key": "FRONTEND_PORT", "description": "前端开发服务器端口", "default": "3000"},
+        ],
+    },
+    "mqtt_worker": {
+        "description": "MQTT 工作者 — 通过 MQTT broker 与设备交互：角色选择、开场白播放、对话通信",
+        "sensitive_env": [],
+        "env_vars": [
+            {"key": "MQTT_ENV", "description": "MQTT 环境标识", "default": "prod"},
+            {"key": "MQTT_HOST", "description": "MQTT Broker 地址", "default": "127.0.0.1"},
+            {"key": "MQTT_PORT", "description": "MQTT Broker 端口", "default": "1883"},
+        ],
+    },
+}
+
+# ── 服务环境配置（profile）定义 ──────────────────────────
+# 每个服务可拥有多个预定义的配置模板（profile），
+# 切换 profile 会更新对应服务的环境变量并重启服务。
+
+_PROFILES_FILE = "/tmp/start-local-dev/service_profiles.json"
+
+# 哪些服务支持 profile 切换（服务ID → profile 组名）
+_SERVICE_PROFILE_GROUP = {
+    "bot_runner": "mqtt",
+    "mqtt_worker": "mqtt",
+}
+
+# 所有可用的 profile 组
+_PROFILE_GROUPS = {
+    "mqtt": {
+        "label": "MQTT Broker",
+        "description": "切换 MQTT 消息代理（影响 bot_runner + mqtt_worker）",
+        "available": {
+            "local": {
+                "label": "本地 Mosquitto",
+                "description": "使用 WSL 中的 Mosquitto broker\n地址: 127.0.0.1:1883\n认证: chiptalk / Zebbingo2024!",
+                "env": {
+                    "CHATBOT_MQTT_ENV": "prod",
+                    "CHATBOT_MQTT_HOST": "127.0.0.1",
+                    "CHATBOT_MQTT_PORT": "1883",
+                },
+            },
+            "cloud": {
+                "label": "AWS IoT Core",
+                "description": "使用 AWS IoT Core 云端 broker\n区域: eu-west-2\n端口: 8883 (TLS)\n认证: X.509 设备证书",
+                "env": {
+                    "CHATBOT_MQTT_ENV": "production",
+                    "CHATBOT_MQTT_HOST": "<endpoint>.iot.eu-west-2.amazonaws.com",
+                    "CHATBOT_MQTT_PORT": "8883",
+                },
+            },
+        },
+    },
+}
+
+
+def _load_active_profiles() -> dict:
+    """加载已保存的 profile 选择状态。"""
+    try:
+        with open(_PROFILES_FILE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_active_profiles(profiles: dict):
+    """保存 profile 选择状态。"""
+    Path(_PROFILES_FILE).parent.mkdir(parents=True, exist_ok=True)
+    with open(_PROFILES_FILE, "w") as f:
+        json.dump(profiles, f, indent=2)
+
+
+def _get_active_profile(service_id: str) -> str:
+    """获取指定服务的当前 profile 名称，默认 'local'。"""
+    profiles = _load_active_profiles()
+    group = _SERVICE_PROFILE_GROUP.get(service_id)
+    if group:
+        return profiles.get(group, "local")
+    return ""
+
+
+def _get_profile_env_vars(service_id: str) -> dict:
+    """获取指定服务当前 profile 的环境变量覆盖。"""
+    group = _SERVICE_PROFILE_GROUP.get(service_id)
+    if not group:
+        return {}
+    active = _get_active_profile(service_id)
+    group_def = _PROFILE_GROUPS.get(group)
+    if not group_def:
+        return {}
+    profile = group_def["available"].get(active)
+    if not profile:
+        return {}
+    return profile["env"]
+
+_VALID_SUITES = ["all", "chatbot", "stt"]
+
+
+def _run_svc_script(action: str, suite: str = "all") -> dict:
+    """Run start-local-dev.sh and return result."""
+    # 加载当前 profile 环境变量，注入到脚本执行环境
+    env = os.environ.copy()
+    active_profiles = _load_active_profiles()
+    for group_name, profile_name in active_profiles.items():
+        group_def = _PROFILE_GROUPS.get(group_name)
+        if group_def:
+            profile = group_def["available"].get(profile_name)
+            if profile:
+                env.update(profile["env"])
+    try:
+        result = subprocess.run(
+            ["bash", _SERVICE_SCRIPT, action, suite],
+            capture_output=True, text=True, timeout=120,
+            env=env,
+        )
+        return {
+            "success": result.returncode == 0,
+            "returncode": result.returncode,
+            "stdout": result.stdout,
+            "stderr": result.stderr,
+        }
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "Command timed out after 120s"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+def _parse_svc_status() -> list[dict]:
+    """Fetch and parse status of all managed services."""
+    result = _run_svc_script("status", "all")
+    services = [
+        {"id": sid, "name": info["name"], "running": False, "pid": None,
+         "port": info["port"], "suites": info["suites"], "log": info["log"]}
+        for sid, info in _SERVICE_INFO.items()
+    ]
+
+    if not result.get("success"):
+        return services
+
+    for line in result.get("stdout", "").split("\n"):
+        line = line.strip()
+        # [INFO] bot_runner: running on :7860 (pid 12345)
+        # [INFO] mqtt worker: running (pid 12348)
+        m = re.match(r'\[INFO\]\s+(.+?):\s+running\s+(?:on\s+:\d+\s+)?\(pid\s+(\d+)\)', line)
+        if m:
+            display = m.group(1)
+            pid = int(m.group(2))
+            for svc in services:
+                if _SERVICE_INFO[svc["id"]]["display_name"] == display:
+                    svc["running"] = True
+                    svc["pid"] = pid
+
+    return services
+
+
+@app.get("/api/services")
+def api_get_services():
+    """获取所有托管服务的运行状态。"""
+    return {"services": _parse_svc_status()}
+
+
+@app.post("/api/services/start/{suite}")
+def api_start_service(suite: str):
+    """启动指定服务套件。"""
+    if suite not in _VALID_SUITES:
+        return {"success": False, "error": f"无效套件: {suite}，有效值: {', '.join(_VALID_SUITES)}"}
+    result = _run_svc_script("start", suite)
+    services = _parse_svc_status()
+    if result.get("success"):
+        return {"success": True, "message": f"已启动 {suite} 套件", "services": services}
+    return {"success": False, "error": result.get("stderr", result.get("stdout", "未知错误")), "services": services}
+
+
+@app.post("/api/services/stop/{suite}")
+def api_stop_service(suite: str):
+    """停止指定服务套件。"""
+    if suite not in _VALID_SUITES:
+        return {"success": False, "error": f"无效套件: {suite}，有效值: {', '.join(_VALID_SUITES)}"}
+    result = _run_svc_script("stop", suite)
+    services = _parse_svc_status()
+    if result.get("success"):
+        return {"success": True, "message": f"已停止 {suite} 套件", "services": services}
+    return {"success": False, "error": result.get("stderr", result.get("stdout", "未知错误")), "services": services}
+
+
+@app.post("/api/services/restart/{suite}")
+def api_restart_service(suite: str):
+    """重启指定服务套件。"""
+    if suite not in _VALID_SUITES:
+        return {"success": False, "error": f"无效套件: {suite}，有效值: {', '.join(_VALID_SUITES)}"}
+    result = _run_svc_script("restart", suite)
+    services = _parse_svc_status()
+    if result.get("success"):
+        return {"success": True, "message": f"已重启 {suite} 套件", "services": services}
+    return {"success": False, "error": result.get("stderr", result.get("stdout", "未知错误")), "services": services}
+
+
+@app.get("/api/services/log/{service_id}")
+def api_get_service_log(service_id: str, lines: int = 200):
+    """获取指定服务的日志（最后 N 行）。"""
+    if service_id not in _SERVICE_INFO:
+        return {"success": False, "error": f"无效服务: {service_id}"}
+
+    log_path = _SERVICE_INFO[service_id]["log"]
+    try:
+        result = subprocess.run(
+            ["tail", "-n", str(lines), log_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        if result.returncode == 0:
+            return {"success": True, "log": result.stdout}
+        return {"success": True, "log": f"[日志文件不存在或为空: {log_path}]"}
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
+
+
+# ── 服务: 环境变量与 Profile ──────────────────────────
+
+
+@app.get("/api/services/annotations")
+def api_get_service_annotations():
+    """获取所有服务的注释/说明和环境变量定义。"""
+    current_profiles = _load_active_profiles()
+    result = {}
+    for sid, info in _SERVICE_INFO.items():
+        ann = _SERVICE_ANNOTATIONS.get(sid, {})
+        group_name = _SERVICE_PROFILE_GROUP.get(sid)
+        profile_info = None
+        if group_name:
+            group_def = _PROFILE_GROUPS.get(group_name)
+            active = current_profiles.get(group_name, "local")
+            profile_info = {
+                "group": group_name,
+                "group_label": group_def["label"] if group_def else group_name,
+                "group_description": group_def["description"] if group_def else "",
+                "active": active,
+                "available": list(group_def["available"].keys()) if group_def else [],
+                "available_labels": {
+                    k: v["label"] for k, v in group_def["available"].items()
+                } if group_def else {},
+                "available_descriptions": {
+                    k: v["description"] for k, v in group_def["available"].items()
+                } if group_def else {},
+            }
+        result[sid] = {
+            "name": info["name"],
+            "description": ann.get("description", ""),
+            "env_vars": ann.get("env_vars", []),
+            "sensitive_env": ann.get("sensitive_env", []),
+            "profile": profile_info,
+        }
+    return result
+
+
+@app.get("/api/services/{service_id}/env")
+def api_get_service_env(service_id: str):
+    """获取指定服务的运行时环境变量（当前 profile 生效的值）。"""
+    if service_id not in _SERVICE_INFO:
+        return {"success": False, "error": f"无效服务: {service_id}"}
+
+    ann = _SERVICE_ANNOTATIONS.get(service_id, {})
+    env_vars = list(ann.get("env_vars", []))
+
+    # 获取 profile 覆盖值
+    profile_overrides = _get_profile_env_vars(service_id)
+
+    # 填充当前运行时值（优先 profile 覆盖，次优先环境中实际值，最后默认值）
+    for var in env_vars:
+        key = var["key"]
+        if key in profile_overrides:
+            var["current"] = profile_overrides[key]
+            var["source"] = "profile"
+        else:
+            actual = os.getenv(key)
+            if actual:
+                var["current"] = actual
+                var["source"] = "env"
+            else:
+                var["current"] = var.get("default", "")
+                var["source"] = "default"
+
+    return {
+        "success": True,
+        "service_id": service_id,
+        "env_vars": env_vars,
+    }
+
+
+@app.post("/api/services/{service_id}/profiles")
+def api_set_service_profile(service_id: str, body: dict):
+    """切换指定服务的 profile（配置模板）。
+
+    请求体: {"profile": "local"} 或 {"profile": "cloud"}
+    会更新 profile 状态，然后重启关联的服务。
+    """
+    profile_name = body.get("profile", "")
+    if service_id not in _SERVICE_INFO:
+        return {"success": False, "error": f"无效服务: {service_id}"}
+    if service_id not in _SERVICE_PROFILE_GROUP:
+        return {"success": False, "error": f"服务 {service_id} 不支持 profile 切换"}
+
+    group = _SERVICE_PROFILE_GROUP[service_id]
+    group_def = _PROFILE_GROUPS.get(group)
+    if not group_def:
+        return {"success": False, "error": f"未找到 profile 组: {group}"}
+    if profile_name not in group_def["available"]:
+        valid = ", ".join(group_def["available"].keys())
+        return {"success": False, "error": f"无效 profile: {profile_name}，可选: {valid}"}
+
+    # 保存 profile 状态
+    profiles = _load_active_profiles()
+    profiles[group] = profile_name
+    _save_active_profiles(profiles)
+
+    profile_label = group_def["available"][profile_name]["label"]
+
+    # 重启关联的服务
+    restart_suites = set()
+    affected_services = []
+    for sid, g in _SERVICE_PROFILE_GROUP.items():
+        if g == group:
+            affected_services.append(sid)
+            for suite_name in _SERVICE_INFO[sid]["suites"]:
+                restart_suites.add(suite_name)
+
+    # 先停止再启动关联套件
+    errors = []
+    for suite in restart_suites:
+        stop_result = _run_svc_script("stop", suite)
+        if not stop_result.get("success"):
+            errors.append(f"停止 {suite} 失败: {stop_result.get('stderr', '')}")
+        start_result = _run_svc_script("start", suite)
+        if not start_result.get("success"):
+            errors.append(f"启动 {suite} 失败: {start_result.get('stderr', '')}")
+
+    services = _parse_svc_status()
+
+    return {
+        "success": len(errors) == 0,
+        "message": f"已切换 {profile_label} profile，已重启受影响的服务",
+        "profile": profile_name,
+        "profile_label": profile_label,
+        "affected_services": affected_services,
+        "errors": errors if errors else None,
+        "services": services,
+    }
+
+
+# ── .env 配置文件管理 ───────────────────────────
+# 使用 env_scanner 动态检测 .env 文件中的开关组
+# 通过"注释/取消注释"切换同一 key 的不同值，不破坏其他项目
+
+_KNOWN_ENV_FILES = {
+    "chatbot": str(Path("/home/administrator/projects/chatbot") / ".env"),
+    "stt-test-tool": str(Path(__file__).resolve().parent.parent / ".env"),
+}
+
+_ENV_FILE_LABELS = {
+    "chatbot": {
+        "label": "Chatbot 后端",
+        "description": "Zebbingo Chatbot 主应用 — MQTT / 数据库 / Redis / AWS 配置",
+    },
+    "stt-test-tool": {
+        "label": "STT 测试平台",
+        "description": "VoicePipe 测试平台后端 — MQTT / 数据库 / TTS API 配置",
+    },
+}
+
+
+@app.get("/api/env-config/files")
+def api_env_list_files():
+    """列出所有已知的 .env 文件及其状态。"""
+    files = []
+    for file_id, path in _KNOWN_ENV_FILES.items():
+        p = Path(path)
+        info = _ENV_FILE_LABELS.get(file_id, {})
+        files.append({
+            "id": file_id,
+            "path": path,
+            "exists": p.exists(),
+            "label": info.get("label", file_id),
+            "description": info.get("description", ""),
+        })
+    return {"files": files}
+
+
+@app.get("/api/env-config/scan/{file_id}")
+def api_env_scan(file_id: str):
+    """扫描指定 .env 文件的开关组（switch groups）。"""
+    path = _KNOWN_ENV_FILES.get(file_id)
+    if not path:
+        return {"success": False, "error": f"未知文件: {file_id}"}
+
+    raw = env_scanner.scan_env_file(path)
+    if "error" in raw:
+        return {"success": False, "error": raw["error"]}
+
+    groups = []
+    for key, group in raw.get("switch_groups", {}).items():
+        options = []
+        for opt in group["options"]:
+            options.append({
+                "value": opt["value"],
+                "active": opt["active"],
+                "line": opt["line_index"],
+                "comment": opt.get("comment", ""),
+            })
+        groups.append({
+            "key": key,
+            "description": group.get("description", []),
+            "options": options,
+            "has_active": group["has_active"],
+            "active_value": next((o["value"] for o in options if o["active"]), None),
+        })
+
+    return {
+        "success": True,
+        "file": path,
+        "file_id": file_id,
+        "file_label": _ENV_FILE_LABELS.get(file_id, {}).get("label", file_id),
+        "switch_groups": groups,
+        "single_var_count": raw.get("single_var_count", 0),
+        "total_lines": raw.get("total_lines", 0),
+    }
+
+
+class EnvSwitchRequest(BaseModel):
+    file_id: str
+    key: str
+    target_value: str
+
+
+@app.post("/api/env-config/switch")
+def api_env_switch(req: EnvSwitchRequest):
+    """切换指定环境变量的激活选项（注释旧值，取消注释新值）。"""
+    path = _KNOWN_ENV_FILES.get(req.file_id)
+    if not path:
+        return {"success": False, "error": f"未知文件: {req.file_id}"}
+
+    result = env_scanner.switch_env_option(path, req.key, req.target_value)
+    return result
+
 
 @app.get("/{full_path:path}", include_in_schema=False)
 async def serve_spa(full_path: str):
