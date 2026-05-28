@@ -48,10 +48,10 @@ export function registerSimulation(opts: {
     deviceId: opts.deviceId,
     figurineId: opts.figurineId,
     mode: opts.mode,
-    logs: opts.logsRef,
-    sttResult: opts.sttResultRef,
+    logs: opts.logsRef as any,
+    sttResult: opts.sttResultRef as any,
     state: s,
-    isSimulating: opts.isSimulatingRef,
+    isSimulating: opts.isSimulatingRef as any,
     isConnected: opts.isConnectedRef?.value ?? false,
     get status() { return s.status },
     get sentChunks() { return s.sentChunks ?? 0 },
@@ -63,7 +63,7 @@ export function registerSimulation(opts: {
     get currentTurn() { return s.currentTurn ?? 0 },
     get protocolVersion() { return s.protocolVersion ?? 'v1.6' },
     get fwVersion() { return s.fwVersion ?? '1.6.0' },
-  }
+  } as any
 }
 
 export function clearSimulation() {

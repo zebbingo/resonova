@@ -107,6 +107,25 @@ export interface SimulationConfig {
   figurineId: string
   mode: 'dialogue' | 'story' | 'music'
   audioId: string
+  mqttProfile?: 'local' | 'relay' | 'custom' | 'aws_iot'
+  mqttEnv?: string
+  mqttHost?: string
+  mqttPort?: number
+  mqttTls?: boolean
+  mqttTlsCaCert?: string
+  mqttTlsClientCert?: string
+  mqttTlsClientKey?: string
+}
+
+export interface MQTTBrokerConfig {
+  mqttProfile?: 'local' | 'relay' | 'custom' | 'aws_iot'
+  mqttEnv?: string
+  mqttHost?: string
+  mqttPort?: number
+  mqttTls?: boolean
+  mqttTlsCaCert?: string
+  mqttTlsClientCert?: string
+  mqttTlsClientKey?: string
 }
 
 const MAX_LOGS = 500
@@ -145,7 +164,65 @@ export function useMQTTSimulation() {
   const sttResult = ref<SttResultData | null>(null)
   let ws: WebSocket | null = null
   let deviceWs: WebSocket | null = null
+  let systemWs: WebSocket | null = null
   let _deviceId: string = ''
+  let _keepaliveTimer: ReturnType<typeof setInterval> | null = null
+  let _onEvictedCallback: ((deviceId: string) => void) | null = null
+
+  /** 注册设备回收回调（由 DeviceManager 设置） */
+  function onDeviceEvicted(cb: (deviceId: string) => void) {
+    _onEvictedCallback = cb
+  }
+
+  /** 每 15 秒向后端发送 keepalive，防止设备被回收 */
+  function _startKeepalive() {
+    _stopKeepalive()
+    _keepaliveTimer = setInterval(async () => {
+      if (!_deviceId) return
+      try {
+        await axios.post(`/api/device/keepalive/${_deviceId}`)
+      } catch {
+        // 静默失败 — 后端可能暂不可达
+      }
+    }, 15_000)
+  }
+
+  function _stopKeepalive() {
+    if (_keepaliveTimer !== null) {
+      clearInterval(_keepaliveTimer)
+      _keepaliveTimer = null
+    }
+  }
+
+  /** 连接系统级 /ws/system，接收 device_evicted 等通知 */
+  function connectSystemWS() {
+    if (systemWs) {
+      systemWs.close()
+      systemWs = null
+    }
+    try {
+      systemWs = new WebSocket(`ws://${window.location.host}/ws/system`)
+      systemWs.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data)
+          if (data.type === 'device_evicted' && data.device_id === _deviceId) {
+            // 当前设备被回收
+            state.isOnline = false
+            state.status = 'idle'
+            isConnected.value = false
+            deviceSM.transitionTo(DeviceState.OFFLINE)
+            if (_onEvictedCallback) {
+              _onEvictedCallback(data.device_id)
+            }
+          }
+        } catch { /* ignore parse errors */ }
+      }
+      systemWs.onclose = () => {
+        // 2s 后重连
+        setTimeout(() => { connectSystemWS() }, 2000)
+      }
+    } catch { /* ignore */ }
+  }
 
   function _findTurn(turnId: string): TurnInfo | undefined {
     return state.activeTurns.find(t => t.turnId === turnId)
@@ -169,7 +246,7 @@ export function useMQTTSimulation() {
     return turn
   }
 
-  async function connectDevice(config: { deviceId: string; figurineId: string; mode: string }) {
+  async function connectDevice(config: { deviceId: string; figurineId: string; mode: string } & MQTTBrokerConfig) {
     isConnecting.value = true
     _deviceId = config.deviceId
 
@@ -184,6 +261,14 @@ export function useMQTTSimulation() {
         device_id: config.deviceId,
         figurine_id: config.figurineId,
         mode: config.mode,
+        mqtt_profile: config.mqttProfile,
+        mqtt_env: config.mqttEnv,
+        mqtt_host: config.mqttHost,
+        mqtt_port: config.mqttPort,
+        mqtt_tls: config.mqttTls,
+        mqtt_tls_ca_cert: config.mqttTlsCaCert,
+        mqtt_tls_client_cert: config.mqttTlsClientCert,
+        mqtt_tls_client_key: config.mqttTlsClientKey,
       })
       state.isOnline = true
       state.status = 'active'
@@ -202,20 +287,19 @@ export function useMQTTSimulation() {
         } catch {}
       }
       deviceWs.onclose = () => {
-        if (isConnected.value) {
-          isConnected.value = false
-          state.isOnline = false
-          if (state.status === 'active' || state.status === 'idle') {
-            state.status = 'idle'
-            // 状态机：异常断开 → OFFLINE
-            deviceSM.transitionTo(DeviceState.OFFLINE)
-          }
-        }
+        // 不再立即标记离线 — keepalive 持续刷新可防止 cleanup 线程回收
+        // 前端可尝试重新打开 WS
       }
+
+      // ── Keepalive 每 15s 刷新设备活跃时间 ──
+      _startKeepalive()
+
+      // ── 连接系统事件频道，接收 device_evicted 通知 ──
+      connectSystemWS()
     } catch (error: any) {
       state.errorMessage = error.response?.data?.error || error.message
       state.status = 'error'
-      deviceSM.setError(state.errorMessage)
+      deviceSM.setError(state.errorMessage || '连接失败')
     } finally {
       isConnecting.value = false
     }
@@ -226,8 +310,10 @@ export function useMQTTSimulation() {
     try {
       await axios.post(`/api/device/disconnect/${_deviceId}`)
     } catch {}
+    _stopKeepalive()
     if (deviceWs) { deviceWs.close(); deviceWs = null }
     if (ws) { ws.close(); ws = null }
+    if (systemWs) { systemWs.close(); systemWs = null }
     isConnected.value = false
     isSimulating.value = false
     state.isOnline = false
@@ -270,6 +356,14 @@ export function useMQTTSimulation() {
         audio_id: config.audioId,
         test_type: 'mqtt',
         subscribe_response: true,
+        mqtt_profile: config.mqttProfile,
+        mqtt_env: config.mqttEnv,
+        mqtt_host: config.mqttHost,
+        mqtt_port: config.mqttPort,
+        mqtt_tls: config.mqttTls,
+        mqtt_tls_ca_cert: config.mqttTlsCaCert,
+        mqtt_tls_client_cert: config.mqttTlsClientCert,
+        mqtt_tls_client_key: config.mqttTlsClientKey,
       })
 
       state.sessionId = resp.data.session_id
@@ -322,7 +416,7 @@ export function useMQTTSimulation() {
       state.errorMessage = error.response?.data?.detail || error.message
       state.status = 'error'
       isSimulating.value = false
-      deviceSM.setError(state.errorMessage)
+      deviceSM.setError(state.errorMessage || '启动失败')
     }
   }
 
@@ -368,7 +462,7 @@ export function useMQTTSimulation() {
         break
 
       case 'tts_synthesis':
-        addLog('down', 'Pipeline/TTS', { status: data.status, duration_ms: data.duration_ms, chunk_count: data.chunk_count }, 'tts_synthesis', turnId)
+        addLog('down', 'Pipeline/TTS', { status: data.status ?? (data.state === 'complete' ? 'success' : data.state), duration_ms: data.duration_ms, chunk_count: data.chunk_count }, 'tts_synthesis', turnId)
         break
 
       case 'intro_start':
@@ -628,6 +722,8 @@ export function useMQTTSimulation() {
     startSimulation,
     stopSimulation,
     clearLogs,
+    onDeviceEvicted,
+    connectSystemWS,
   }
 }
 

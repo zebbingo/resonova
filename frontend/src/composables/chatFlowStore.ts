@@ -437,6 +437,10 @@ watch(
           
           if (status === 'success') {
             completeStep(phase, '语音合成', `✅ 生成 ${chunkCount} 个音频块 (${duration}ms)`)
+          } else if (status === 'start') {
+            // 合成已启动 — 更新进度描述，保持 running 状态
+            const step = flowStore.phases.find(x => x.id === phase)?.steps.find(s => s.label === '语音合成')
+            if (step) step.detail = `🎤 合成中...`
           } else {
             completeStep(phase, '语音合成', `❌ 错误: ${log.payload?.error ?? '未知错误'} (${duration}ms)`)
           }
