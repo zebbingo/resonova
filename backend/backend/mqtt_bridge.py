@@ -150,9 +150,101 @@ def _resolve_mqtt_tls() -> bool:
 
 def _resolve_mqtt_profile(raw_profile: str | None) -> str:
     profile = (raw_profile or DEFAULT_MQTT_BROKER_PROFILE or "local").strip().lower()
-    if profile in {"local", "relay", "custom"}:
+    if profile in {"local", "relay", "custom", "aws_iot"}:
         return profile
     return "local"
+
+
+def _find_one(base_dir: Path, patterns: tuple[str, ...], label: str) -> Path:
+    """Find exactly one file matching the given patterns under base_dir."""
+    for pattern in patterns:
+        matches = sorted(path for path in base_dir.glob(pattern) if path.is_file())
+        if len(matches) == 1:
+            return matches[0]
+        non_sg_matches = [path for path in matches if ".sg." not in path.name]
+        if len(non_sg_matches) == 1:
+            return non_sg_matches[0]
+    all_matches: list[Path] = []
+    for pattern in patterns:
+        all_matches.extend(sorted(path for path in base_dir.glob(pattern) if path.is_file()))
+    unique_matches = list(dict.fromkeys(all_matches))
+    if len(unique_matches) == 1:
+        return unique_matches[0]
+    if not unique_matches:
+        raise FileNotFoundError(f"No {label} found under {base_dir}")
+    formatted = "\n  ".join(str(path) for path in unique_matches)
+    raise ValueError(
+        f"Multiple {label} files found under {base_dir}; specify explicitly:\n  {formatted}"
+    )
+
+
+def _find_ca(thing_dir: Path, cert_root: Path | None) -> Path | None:
+    """Find root CA certificate (AmazonRootCA*.pem / root-CA.crt) in given dirs."""
+    ca_patterns = ("root-CA.crt", "AmazonRootCA*.pem", "*RootCA*.pem", "*.ca.pem")
+    base_dirs = [thing_dir]
+    if cert_root:
+        base_dirs.append(cert_root)
+    for base_dir in base_dirs:
+        for pattern in ca_patterns:
+            matches = sorted(path for path in base_dir.rglob(pattern) if path.is_file())
+            if matches:
+                return matches[0]
+    return None
+
+
+def _resolve_aws_iot_certs(
+    explicit_ca: str | None = None,
+    explicit_cert: str | None = None,
+    explicit_key: str | None = None,
+) -> tuple[str | None, str | None, str | None]:
+    """Auto-discover AWS IoT TLS certificates from environment variables.
+
+    Order of precedence:
+      1. Explicitly passed paths (from frontend UI)
+      2. Auto-discovered from AWS_IOT_CERT_ROOT / AWS_IOT_THING
+      3. Environment variables MQTT_TLS_CA_CERT / MQTT_TLS_CLIENT_CERT / MQTT_TLS_CLIENT_KEY
+    """
+    # Already explicitly provided via API call → use as-is
+    if explicit_ca and explicit_cert and explicit_key:
+        return explicit_ca, explicit_cert, explicit_key
+
+    cert_root_env = os.getenv("AWS_IOT_CERT_ROOT")
+    thing_env = os.getenv("AWS_IOT_THING")
+    thing_dir: Path | None = None
+    if cert_root_env and thing_env:
+        td = Path(cert_root_env) / thing_env
+        if td.is_dir():
+            thing_dir = td
+
+    ca = explicit_ca
+    cert = explicit_cert
+    key = explicit_key
+
+    if thing_dir:
+        if not cert:
+            try:
+                cert = str(_find_one(thing_dir, ("*.cert.pem", "*.pem.crt"), "cert file"))
+            except (FileNotFoundError, ValueError):
+                pass
+        if not key:
+            try:
+                key = str(_find_one(thing_dir, ("*.private.key", "*-private.key"), "key file"))
+            except (FileNotFoundError, ValueError):
+                pass
+        if not ca:
+            ca_path = _find_ca(thing_dir, Path(cert_root_env) if cert_root_env else None)
+            if ca_path:
+                ca = str(ca_path)
+
+    # Fall back to environment variables
+    if not ca:
+        ca = explicit_ca or os.getenv("MQTT_TLS_CA_CERT")
+    if not cert:
+        cert = explicit_cert or os.getenv("MQTT_TLS_CLIENT_CERT")
+    if not key:
+        key = explicit_key or os.getenv("MQTT_TLS_CLIENT_KEY")
+
+    return ca, cert, key
 
 
 def _resolve_broker_config(
@@ -162,7 +254,11 @@ def _resolve_broker_config(
     mqtt_host: str | None = None,
     mqtt_port: int | None = None,
     mqtt_tls: bool | None = None,
-) -> tuple[str, str, str, int, bool]:
+    mqtt_tls_ca_cert: str | None = None,
+    mqtt_tls_client_cert: str | None = None,
+    mqtt_tls_client_key: str | None = None,
+    mqtt_tls_insecure: bool | None = None,
+) -> tuple[str, str, str, int, bool, str | None, str | None, str | None, bool]:
     profile = _resolve_mqtt_profile(mqtt_profile)
 
     if profile == "local":
@@ -170,7 +266,11 @@ def _resolve_broker_config(
         host = mqtt_host or _resolve_local_mqtt_host()
         port = mqtt_port if mqtt_port is not None else 1883
         tls = False if mqtt_tls is None else bool(mqtt_tls)
-        return profile, env, host, port, tls
+        ca_cert = mqtt_tls_ca_cert or os.getenv("MQTT_TLS_CA_CERT")
+        client_cert = mqtt_tls_client_cert or os.getenv("MQTT_TLS_CLIENT_CERT")
+        client_key = mqtt_tls_client_key or os.getenv("MQTT_TLS_CLIENT_KEY")
+        tls_insecure = _resolve_tls_insecure(mqtt_tls_insecure)
+        return profile, env, host, port, tls, ca_cert, client_cert, client_key, tls_insecure
 
     if profile == "relay":
         env = mqtt_env or os.getenv("MQTT_RELAY_ENV", "development")
@@ -184,13 +284,44 @@ def _resolve_broker_config(
                 tls = str(tls_raw).strip().lower() in {"1", "true", "yes", "on"}
         else:
             tls = bool(mqtt_tls)
-        return profile, env, host, port, tls
+        ca_cert = mqtt_tls_ca_cert or os.getenv("MQTT_TLS_CA_CERT")
+        client_cert = mqtt_tls_client_cert or os.getenv("MQTT_TLS_CLIENT_CERT")
+        client_key = mqtt_tls_client_key or os.getenv("MQTT_TLS_CLIENT_KEY")
+        tls_insecure = _resolve_tls_insecure(mqtt_tls_insecure)
+        return profile, env, host, port, tls, ca_cert, client_cert, client_key, tls_insecure
 
+    if profile == "aws_iot":
+        # AWS IoT uses TLS by default with port 8883
+        env = mqtt_env or os.getenv("MQTT_ENV", "development")
+        host = mqtt_host or os.getenv("MQTT_HOST", "")
+        port = mqtt_port if mqtt_port is not None else int(os.getenv("MQTT_PORT", "8883"))
+        # TLS is always enabled for AWS IoT; user can override to disable
+        tls = True if mqtt_tls is None else bool(mqtt_tls)
+        # Auto-discover TLS certificates
+        ca_cert, client_cert, client_key = _resolve_aws_iot_certs(
+            explicit_ca=mqtt_tls_ca_cert,
+            explicit_cert=mqtt_tls_client_cert,
+            explicit_key=mqtt_tls_client_key,
+        )
+        tls_insecure = _resolve_tls_insecure(mqtt_tls_insecure)
+        return profile, env, host, port, tls, ca_cert, client_cert, client_key, tls_insecure
+
+    # "custom" profile fallback
     env = mqtt_env or _resolve_mqtt_env()
     host = mqtt_host or _resolve_mqtt_host()
     port = mqtt_port if mqtt_port is not None else _resolve_mqtt_port()
     tls = _resolve_mqtt_tls() if mqtt_tls is None else bool(mqtt_tls)
-    return profile, env, host, port, tls
+    ca_cert = mqtt_tls_ca_cert or os.getenv("MQTT_TLS_CA_CERT")
+    client_cert = mqtt_tls_client_cert or os.getenv("MQTT_TLS_CLIENT_CERT")
+    client_key = mqtt_tls_client_key or os.getenv("MQTT_TLS_CLIENT_KEY")
+    tls_insecure = _resolve_tls_insecure(mqtt_tls_insecure)
+    return profile, env, host, port, tls, ca_cert, client_cert, client_key, tls_insecure
+
+
+def _resolve_tls_insecure(raw: bool | None) -> bool:
+    if raw is not None:
+        return bool(raw)
+    return os.getenv("MQTT_TLS_INSECURE", "false").lower() in {"1", "true", "yes", "on"}
 
 
 class SimulationEventBus:
@@ -247,6 +378,10 @@ class ConnectedDevice:
         broker_host: str = "localhost",
         broker_port: int = 1883,
         broker_tls: bool = False,
+        broker_tls_ca_cert: Optional[str] = None,
+        broker_tls_client_cert: Optional[str] = None,
+        broker_tls_client_key: Optional[str] = None,
+        broker_tls_insecure: bool = False,
         subscribe_response: bool = False,
         speed: float = 0,
         event_bus: Optional[SimulationEventBus] = None,
@@ -260,6 +395,10 @@ class ConnectedDevice:
         self.broker_host = broker_host
         self.broker_port = broker_port
         self.broker_tls = broker_tls
+        self.broker_tls_ca_cert = broker_tls_ca_cert
+        self.broker_tls_client_cert = broker_tls_client_cert
+        self.broker_tls_client_key = broker_tls_client_key
+        self.broker_tls_insecure = broker_tls_insecure
         self.subscribe_response = subscribe_response
         self.speed = speed
         self.event_bus = event_bus
@@ -269,7 +408,21 @@ class ConnectedDevice:
         self._simulating = False
         self._stop_requested = False
         self.session_id: Optional[str] = secrets.token_urlsafe(9)[:12]
+        self._last_seen: float = time.time()  # frontend keepalive heartbeat
         self._lock = threading.Lock()
+
+    def touch_seen(self):
+        """Mark device as recently active (called on connect / keepalive)."""
+        self._last_seen = time.time()
+
+    @property
+    def seconds_since_seen(self) -> float:
+        return time.time() - self._last_seen
+
+    @property
+    def is_stale(self, timeout: float = 60) -> bool:
+        """Device is stale if no keepalive for >timeout seconds AND not simulating."""
+        return (not self._simulating) and (time.time() - self._last_seen > timeout)
 
     @staticmethod
     def _parse_response_topic(topic: str) -> tuple[str, dict[str, str]]:
@@ -336,6 +489,10 @@ class ConnectedDevice:
             broker_host=self.broker_host,
             broker_port=self.broker_port,
             tls_enabled=self.broker_tls,
+            tls_ca_cert=self.broker_tls_ca_cert,
+            tls_client_cert=self.broker_tls_client_cert,
+            tls_client_key=self.broker_tls_client_key,
+            tls_insecure=self.broker_tls_insecure,
             on_mqtt_event=self._on_fw_mqtt_event,
         )
         self._fw.on_log = self._on_fw_log
@@ -475,6 +632,7 @@ class ConnectedDevice:
             )
             session_id = self._fw.session_id
             self.session_id = session_id
+            self.touch_seen()
             logger.info("Intro session started: %s", session_id)
 
             self._emit_session(session_id, "session_status", {
@@ -483,7 +641,7 @@ class ConnectedDevice:
             })
             self._emit_session(session_id, "intro", {"status": "intro_playing"})
 
-            intro_ok = self._fw.wait_for_intro_eos(timeout=90)
+            intro_ok = self._fw.wait_for_intro_completion(timeout=90)
             if intro_ok:
                 logger.info("Intro EOS received for session %s", session_id)
                 self._emit_session(session_id, "intro", {
@@ -623,7 +781,7 @@ class ConnectedDevice:
                     "topic": f"{self._fw.base_topic}/response/#",
                 })
 
-            intro_ok = self._fw.wait_for_intro_eos(timeout=90)
+            intro_ok = self._fw.wait_for_intro_completion(timeout=90)
             if intro_ok:
                 logger.info("Intro EOS received for session %s", result.session_id)
                 self._emit_session(result.session_id, "session_status", {
@@ -802,11 +960,25 @@ class SimulationManager:
     def __init__(self):
         self._devices: dict[str, ConnectedDevice] = {}
         self._threads: dict[str, threading.Thread] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self.event_bus = SimulationEventBus()
         self._results: dict[str, dict] = {}
         self._session_aliases: dict[str, str] = {}
         self._load_history()
+        self._start_cleanup_thread()
+
+    def _start_cleanup_thread(self):
+        """Background daemon thread that periodically evicts stale devices & orphans."""
+        def _loop():
+            while True:
+                time.sleep(30)
+                try:
+                    self._evict_devices_if_full()
+                    self.cleanup_orphan_sessions(max_age_seconds=120)
+                except Exception:
+                    logger.exception("Cleanup thread error")
+        t = threading.Thread(target=_loop, daemon=True, name="device-cleanup")
+        t.start()
 
     @property
     def devices(self) -> dict[str, ConnectedDevice]:
@@ -822,6 +994,47 @@ class SimulationManager:
                 current = self._session_aliases[current]
         return current
 
+    def _evict_devices_if_full(self) -> bool:
+        """Evict stale or idle devices to stay under MAX_DEVICES.
+
+        Emits a device_evicted event on the event bus so connected
+        frontends receive notification. The event carries the evictee's
+        ID and reason (stale or idle).
+        """
+        with self._lock:
+            while len(self._devices) >= self.MAX_DEVICES:
+                stale = [
+                    did for did, d in self._devices.items()
+                    if d.is_stale
+                ]
+                target_id = stale[0] if stale else None
+                reason = "stale"
+                if not target_id:
+                    idle = [
+                        did for did, d in self._devices.items()
+                        if not d.is_simulating
+                    ]
+                    target_id = idle[0] if idle else None
+                    reason = "idle"
+                if not target_id:
+                    return False
+                dev = self._devices.pop(target_id, None)
+                self._threads.pop(target_id, None)
+                if dev:
+                    try:
+                        dev.power_off()
+                    except Exception:
+                        pass
+                    # ── 通知前端：设备已被回收 ──
+                    self.event_bus.publish("_system", {
+                        "type": "device_evicted",
+                        "device_id": target_id,
+                        "reason": reason,
+                        "timestamp": time.time(),
+                    })
+                    self.event_bus.remove_queue(target_id)
+            return True
+
     def connect_device(
         self,
         device_id: str,
@@ -834,15 +1047,24 @@ class SimulationManager:
         mqtt_host: str | None = None,
         mqtt_port: int | None = None,
         mqtt_tls: bool | None = None,
+        mqtt_tls_ca_cert: str | None = None,
+        mqtt_tls_client_cert: str | None = None,
+        mqtt_tls_client_key: str | None = None,
+        mqtt_tls_insecure: bool | None = None,
         skip_auto_intro: bool = False,
     ) -> dict:
         """Connect a device (power_on). Device stays online for multiple sessions."""
-        resolved_profile, resolved_env, resolved_host, resolved_port, resolved_tls = _resolve_broker_config(
+        (resolved_profile, resolved_env, resolved_host, resolved_port, resolved_tls,
+         resolved_tls_ca, resolved_tls_cert, resolved_tls_key, resolved_tls_insecure) = _resolve_broker_config(
             mqtt_profile=mqtt_profile,
             mqtt_env=mqtt_env,
             mqtt_host=mqtt_host,
             mqtt_port=mqtt_port,
             mqtt_tls=mqtt_tls,
+            mqtt_tls_ca_cert=mqtt_tls_ca_cert,
+            mqtt_tls_client_cert=mqtt_tls_client_cert,
+            mqtt_tls_client_key=mqtt_tls_client_key,
+            mqtt_tls_insecure=mqtt_tls_insecure,
         )
 
         with self._lock:
@@ -857,7 +1079,8 @@ class SimulationManager:
                         and dev.broker_tls == resolved_tls
                     )
                     if same_broker:
-                        return {"device_id": device_id, "status": "already_connected"}
+                        dev.touch_seen()
+                        return {"device_id": device_id, "status": "already_connected", "intro": "auto_triggered"}
                     self._threads.pop(device_id, None)
                     try:
                         dev.power_off()
@@ -865,36 +1088,9 @@ class SimulationManager:
                         pass
                     self.event_bus.remove_queue(device_id)
                     self._devices.pop(device_id, None)
-                if len(self._devices) >= self.MAX_DEVICES:
-                    idle_device_id = next(
-                        (did for did, candidate in self._devices.items() if not candidate.is_simulating),
-                        None,
-                    )
-                    if idle_device_id is not None:
-                        idle_dev = self._devices.pop(idle_device_id)
-                        self._threads.pop(idle_device_id, None)
-                        try:
-                            idle_dev.power_off()
-                        except Exception:
-                            pass
-                        self.event_bus.remove_queue(idle_device_id)
-                    if len(self._devices) >= self.MAX_DEVICES:
-                        raise ValueError(f"Max {self.MAX_DEVICES} concurrent devices")
-            elif len(self._devices) >= self.MAX_DEVICES:
-                idle_device_id = next(
-                    (did for did, candidate in self._devices.items() if not candidate.is_simulating),
-                    None,
-                )
-                if idle_device_id is not None:
-                    idle_dev = self._devices.pop(idle_device_id)
-                    self._threads.pop(idle_device_id, None)
-                    try:
-                        idle_dev.power_off()
-                    except Exception:
-                        pass
-                    self.event_bus.remove_queue(idle_device_id)
-                if len(self._devices) >= self.MAX_DEVICES:
-                    raise ValueError(f"Max {self.MAX_DEVICES} concurrent devices")
+
+            if not self._evict_devices_if_full():
+                raise ValueError(f"Max {self.MAX_DEVICES} concurrent devices, all busy")
 
         self.event_bus.create_queue(device_id)
 
@@ -908,6 +1104,10 @@ class SimulationManager:
             broker_host=resolved_host,
             broker_port=resolved_port,
             broker_tls=resolved_tls,
+            broker_tls_ca_cert=resolved_tls_ca,
+            broker_tls_client_cert=resolved_tls_cert,
+            broker_tls_client_key=resolved_tls_key,
+            broker_tls_insecure=resolved_tls_insecure,
             event_bus=self.event_bus,
         )
 
@@ -933,6 +1133,10 @@ class SimulationManager:
             "mqtt_host": resolved_host,
             "mqtt_port": resolved_port,
             "mqtt_tls": resolved_tls,
+            "mqtt_tls_ca_cert": resolved_tls_ca,
+            "mqtt_tls_client_cert": resolved_tls_cert,
+            "mqtt_tls_client_key": resolved_tls_key,
+            "mqtt_tls_insecure": resolved_tls_insecure,
             "intro": "auto_triggered",
         }
 
@@ -1126,6 +1330,8 @@ class SimulationManager:
             "mqtt_host": dev.broker_host,
             "mqtt_port": dev.broker_port,
             "mqtt_tls": dev.broker_tls,
+            "last_seen_sec": int(dev.seconds_since_seen),
+            "is_stale": dev.is_stale,
             "fw_status": fw,
         }
 
@@ -1245,14 +1451,23 @@ class SimulationManager:
         mqtt_host: str | None = None,
         mqtt_port: int | None = None,
         mqtt_tls: bool | None = None,
+        mqtt_tls_ca_cert: str | None = None,
+        mqtt_tls_client_cert: str | None = None,
+        mqtt_tls_client_key: str | None = None,
+        mqtt_tls_insecure: bool | None = None,
     ) -> str:
         """Legacy API: connect + run in one shot (for backward compatibility)."""
-        resolved_profile, resolved_env, resolved_host, resolved_port, resolved_tls = _resolve_broker_config(
+        (resolved_profile, resolved_env, resolved_host, resolved_port, resolved_tls,
+         resolved_tls_ca, resolved_tls_cert, resolved_tls_key, resolved_tls_insecure) = _resolve_broker_config(
             mqtt_profile=mqtt_profile,
             mqtt_env=mqtt_env,
             mqtt_host=mqtt_host,
             mqtt_port=mqtt_port,
             mqtt_tls=mqtt_tls,
+            mqtt_tls_ca_cert=mqtt_tls_ca_cert,
+            mqtt_tls_client_cert=mqtt_tls_client_cert,
+            mqtt_tls_client_key=mqtt_tls_client_key,
+            mqtt_tls_insecure=mqtt_tls_insecure,
         )
 
         with self._lock:
@@ -1279,6 +1494,10 @@ class SimulationManager:
                 or dev.broker_host != resolved_host
                 or dev.broker_port != resolved_port
                 or dev.broker_tls != resolved_tls
+                or dev.broker_tls_ca_cert != resolved_tls_ca
+                or dev.broker_tls_client_cert != resolved_tls_cert
+                or dev.broker_tls_client_key != resolved_tls_key
+                or dev.broker_tls_insecure != resolved_tls_insecure
             )
             if needs_reconnect:
                 self.disconnect_device(device_id)
@@ -1295,6 +1514,10 @@ class SimulationManager:
                 mqtt_host=resolved_host,
                 mqtt_port=resolved_port,
                 mqtt_tls=resolved_tls,
+                mqtt_tls_ca_cert=resolved_tls_ca,
+                mqtt_tls_client_cert=resolved_tls_cert,
+                mqtt_tls_client_key=resolved_tls_key,
+                mqtt_tls_insecure=resolved_tls_insecure,
                 skip_auto_intro=True,
             )
 

@@ -39,6 +39,7 @@ DeviceFirmware — 嵌入式设备固件模拟器 (v1.6 协议, Han Wu's spec)
 import json
 import os
 import secrets
+import ssl
 import threading
 import time
 from collections import OrderedDict
@@ -117,6 +118,10 @@ class DeviceFirmware:
         username: Optional[str] = None,
         password: Optional[str] = None,
         tls_enabled: bool = False,
+        tls_ca_cert: Optional[str] = None,
+        tls_client_cert: Optional[str] = None,
+        tls_client_key: Optional[str] = None,
+        tls_insecure: bool = False,
         on_mqtt_event: Optional[callable] = None,
     ):
         self.device_id = device_id
@@ -127,6 +132,10 @@ class DeviceFirmware:
         self._username = username or os.getenv("MQTT_USERNAME")
         self._password = password or os.getenv("MQTT_PASSWORD")
         self._tls_enabled = tls_enabled
+        self._tls_ca_cert = tls_ca_cert or os.getenv("MQTT_TLS_CA_CERT")
+        self._tls_client_cert = tls_client_cert or os.getenv("MQTT_TLS_CLIENT_CERT")
+        self._tls_client_key = tls_client_key or os.getenv("MQTT_TLS_CLIENT_KEY")
+        self._tls_insecure = tls_insecure
 
         self.state = DeviceState.OFFLINE
         self.session_id: Optional[str] = None
@@ -152,7 +161,31 @@ class DeviceFirmware:
         if self._username:
             self._client.username_pw_set(self._username, self._password or "")
         if self._tls_enabled:
-            self._client.tls_set()
+            missing = []
+            if not self._tls_ca_cert:
+                missing.append("MQTT_TLS_CA_CERT (CA certificate)")
+            if self._tls_client_cert and not os.path.isfile(self._tls_client_cert):
+                missing.append(f"MQTT_TLS_CLIENT_CERT: {self._tls_client_cert}")
+            if self._tls_client_key and not os.path.isfile(self._tls_client_key):
+                missing.append(f"MQTT_TLS_CLIENT_KEY: {self._tls_client_key}")
+            if self._tls_ca_cert and not os.path.isfile(self._tls_ca_cert):
+                missing.append(f"MQTT_TLS_CA_CERT: {self._tls_ca_cert}")
+            if missing:
+                raise ValueError(
+                    f"Device {self.device_id}: TLS enabled but certificate configuration is incomplete:\n"
+                    + "\n".join(f"  - {m}" for m in missing)
+                    + "\nSet MQTT_TLS_CA_CERT, MQTT_TLS_CLIENT_CERT, MQTT_TLS_CLIENT_KEY in .env "
+                    "or pass tls_ca_cert/tls_client_cert/tls_client_key to DeviceFirmware."
+                )
+
+            self._client.tls_set(
+                ca_certs=self._tls_ca_cert,
+                certfile=self._tls_client_cert,
+                keyfile=self._tls_client_key,
+                tls_version=ssl.PROTOCOL_TLSv1_2,
+            )
+            if self._tls_insecure:
+                self._client.tls_insecure_set(True)
         self._client.on_connect = self._on_connect
         self._client.on_message = self._on_message
         self._client.on_disconnect = self._on_disconnect
@@ -226,10 +259,34 @@ class DeviceFirmware:
         )
 
         self._set_state(DeviceState.IDLE)
-        self._client.connect(self._broker_host, self._broker_port, keepalive=60)
+        try:
+            self._client.connect(self._broker_host, self._broker_port, keepalive=60)
+        except ssl.SSLCertVerificationError as exc:
+            raise ConnectionError(
+                f"Device {self.device_id}: TLS certificate verification failed connecting to "
+                f"{self._broker_host}:{self._broker_port}: {exc}\n"
+                "Check that MQTT_TLS_CA_CERT points to the correct Root CA file."
+            )
+        except ssl.SSLError as exc:
+            raise ConnectionError(
+                f"Device {self.device_id}: TLS error connecting to "
+                f"{self._broker_host}:{self._broker_port}: {exc}\n"
+                f"Check certificate files:\n"
+                f"  CA:   {self._tls_ca_cert}\n"
+                f"  Cert: {self._tls_client_cert}\n"
+                f"  Key:  {self._tls_client_key}"
+            )
+        except OSError as exc:
+            raise ConnectionError(
+                f"Device {self.device_id}: cannot reach broker {self._broker_host}:{self._broker_port}: {exc}"
+            )
         self._client.loop_start()
         if not self._connected.wait(timeout=10):
-            raise ConnectionError(f"Device {self.device_id}: MQTT connection timeout")
+            self._client.loop_stop()
+            raise ConnectionError(
+                f"Device {self.device_id}: MQTT connection timeout after 10s "
+                f"(broker={self._broker_host}:{self._broker_port}, tls={self._tls_enabled})"
+            )
 
         online_payload = json.dumps({"online": True, "ts": int(time.time() * 1000),
                                       "fw": self.identity.get("fw_version", "1.6.0")})
@@ -412,6 +469,27 @@ class DeviceFirmware:
         if result:
             self._log("[FW] introeos received")
         return result
+
+    def wait_for_intro_completion(self, timeout: float = 30) -> bool:
+        """Wait for either intro completion signal used by the test rig.
+
+        The chatbot side can legitimately finish the intro in two ways:
+        - ``audio/eos`` for turn 0, which marks the intro audio buffer drained
+        - ``audio/introeos`` for the explicit intro completion marker
+
+        Some sessions only surface one of those signals, so the simulator
+        accepts either one as a successful intro completion.
+        """
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if self._intro_eos_event.is_set():
+                self._log("[FW] introeos received")
+                return True
+            if self._intro_audio_eos_event.is_set():
+                self._log("[FW] intro audio EOS received")
+                return True
+            time.sleep(0.05)
+        return False
 
     def wait_for_intro_audio_end(self, timeout: float = 60) -> bool:
         return self._intro_audio_eos_event.wait(timeout=timeout)

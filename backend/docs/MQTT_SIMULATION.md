@@ -1,5 +1,18 @@
 # MQTT 设备模拟功能说明
 
+> ⚠️ **DEPRECATED / 仅用于旧版模拟器架构**
+>
+> 本文档描述的 topic 格式（`devices/{device_id}/session/start`）、chunk 编码（Base64 JSON）、
+> 和 response 格式（`response/vadeos`, `response/audio_start`）**均为旧版架构的产物**，
+> 与当前使用的 **MQTT 设备协议 v1.6**（`<env>/<device_id>/request|response/...`、raw Opus bytes）**完全不兼容**。
+>
+> **请勿将本文档的 topic 格式作为实现依据。**
+>
+> **权威入口：** [`projects/chatbot/docs/03-mqtt/02-mqtt-spec-v1.6.md`](../../chatbot/docs/03-mqtt/02-mqtt-spec-v1.6.md)
+>
+> 当前模拟器实现由 `mqtt_bridge.py` + `DeviceFirmware` 完成，使用 v1.6 协议。
+> 本文档保留仅用于历史回溯，后续更新请直接编辑 v1.6 规范。
+
 ## 🎯 功能概述
 
 STT 测试平台提供**真实的 MQTT 设备模拟**功能，通过标准 MQTT 协议与 chatbot 后端进行通信，完整模拟真实设备的会话生命周期。
@@ -45,52 +58,62 @@ graph TB
 
 ## 🔄 完整调用流程
 
+### 设备生命周期概览
+
+每个模拟设备经历以下生命周期（由 `DeviceFirmware` 管理）：
+
+```
+power_on() → meta/online (birth) + device heartbeat → 
+  start_session() → session/hb (60s) →
+    wait_for_intro() ← chatbot intro TTS →
+    start_turn(pcm_data) → audio/chunk* → audio/eos →
+    wait_for_turn_response() ← chatbot TTS + command →
+    stop_session() →
+  power_off() → meta/online:false (LWT)
+```
+
 ### 时序图
 
 ```mermaid
 sequenceDiagram
     participant F as Frontend (Vue)
     participant B as Backend (FastAPI)
+    participant D as DeviceFirmware
     participant M as Mosquitto (WSL)
     participant C as Chatbot (WSL)
     
+    Note over D: DeviceFirmware.power_on()
+    D->>M: PUBLISH meta/online {online:true} (QoS 1, retain)
+    D->>M: SUB response/#, state/desired, ota/desired
+    
     F->>B: POST /api/device/simulate
-    Note over B: 创建 MQTTDeviceSimulator
-    B->>M: 连接 MQTT Broker (localhost:1883)
-    M-->>B: 连接成功
+    Note over B: ConnectedDevice(DeviceFirmware).run_session()
     
-    B->>M: PUBLISH session/start (QoS 1)
-    M->>C: 转发 session/start
-    C-->>M: 订阅 response/#
+    D->>M: PUBLISH request/session/{sid}/start (QoS 1)
+    M->>C: 转发 session/start (通过 $share)
+    D->>M: PUBLISH request/audio/0/start,chunk*,eos (intro turn)
+    C->>M: PUBLISH response/audio/{sid}/0/start,chunk*,eos
+    Note over D: 等待 intro 完成
     
-    B->>M: PUBLISH audio/start (QoS 1)
-    M->>C: 转发 audio/start
-    
-    loop 分帧发送音频
-        B->>M: PUBLISH audio/chunk (QoS 0)
-        M->>C: 转发 chunk
+    D->>M: PUBLISH request/audio/{sid}/{tid}/start (QoS 1)
+    loop Opus 分帧
+        D->>M: PUBLISH request/audio/{sid}/{tid}/chunk/{seq} (QoS 0)
     end
+    D->>M: PUBLISH request/audio/{sid}/{tid}/eos (QoS 1)
     
-    B->>M: PUBLISH audio/eos (QoS 1)
-    M->>C: 转发 audio/eos
-    Note over C: STT 识别中...
+    C->>M: PUBLISH response/audio/{sid}/{tid}/vadeos (STT 文本)
+    C->>M: PUBLISH response/command/{sid}/{tid} (LLM 语义)
+    C->>M: PUBLISH response/audio/{sid}/{tid}/start,chunk*,eos (TTS)
+    D->>M: PUBLISH request/audio/{sid}/{tid}/done (播放回执)
     
-    C->>M: PUBLISH response/vadeos
-    M->>B: 转发 STT 结果
-    B->>F: WebSocket: stt_result
+    D->>M: PUBLISH request/session/{sid}/end (QoS 1)
     
-    B->>M: PUBLISH session/end (QoS 1)
-    M->>C: 转发 session/end
-    
-    B->>M: DISCONNECT
-    B->>F: WebSocket: session_complete
-    
-    Note over F,B: 会话结束，返回完整结果
+    B->>F: WebSocket: session_complete (含 STT/TTS/commands/cues)
 ```
 
 ### 详细步骤
 
-#### 1. 前端发起模拟请求
+#### 1. 前端发起模拟请求（保持不变）
 
 ```typescript
 // frontend/src/composables/useMQTTSimulation.ts
@@ -114,96 +137,112 @@ async function startSimulation(config: SimulationConfig) {
 }
 ```
 
-#### 2. 后端创建模拟器
+#### 2. 后端设备登录（长期在线）
+
+设备连接后保持长期在线，可多次执行会话：
 
 ```python
-# backend/server.py
-@app.post("/api/device/simulate")
-def start_device_simulation(req: SimulateRequest):
-    session_id = simulation_manager.start_simulation(
-        device_id=req.device_id,
-        figurine_id=req.figurine_id,
-        mode=req.mode,
-        audio_id=req.audio_id,
-        resolve_audio=_resolve_audio_for_sim,
-        subscribe_response=req.subscribe_response,
-        mqtt_env=req.mqtt_env,
-        mqtt_host=req.mqtt_host,
-        mqtt_port=req.mqtt_port,
-        mqtt_tls=req.mqtt_tls,
+# backend/mqtt_bridge.py - ConnectedDevice.connect_device()
+def connect_device(self):
+    # 委托 DeviceFirmware 管理完整生命周期
+    self._fw = DeviceFirmware(
+        device_id=self.device_id,
+        env=self.mqtt_env,
+        broker_host=self.mqtt_host,
+        broker_port=self.mqtt_port,
+        on_mqtt_event=self._on_fw_mqtt_event,
     )
-    return {"session_id": session_id, "status": "started"}
+    self._fw.on_state_change = self._on_fw_state_change
+    self._fw.on_command = self._on_fw_command
+    self._fw.on_cue_audio = self._on_fw_cue
+    self._fw.on_log = self._on_fw_log
+    self._fw.power_on()
+    # → meta/online (retain), meta/hb 后台线程
+    # → 订阅 response/#, state/desired, ota/desired
 ```
 
-#### 3. MQTT 会话生命周期
+#### 3. 一次完整的会话生命周期
 
 ```python
-# backend/mqtt_bridge.py - MQTTDeviceSimulator.simulate_from_wav()
+# backend/mqtt_bridge.py - ConnectedDevice.run_session()
 
-# Step 1: 连接 MQTT Broker
-self._connect()  # localhost:1883
+# Step 1: DeviceFirmware.power_on() 已在 connect_device 中执行
+# 设备在线 → meta/online + 设备心跳 (30s) + 订阅
 
-# Step 2: 发布 session/start
-self._publish_session_start()
-# Topic: devices/{device_id}/session/start
-# Payload: {"session_id": "...", "character": "...", "mode": "dialogue"}
+# Step 2: 启动会话
+fw.start_session(figurine_id="roman_centurion", mode="dialogue")
+# → PUBLISH <env>/<device_id>/request/session/<session_id>/start (QoS 1)
+# → 启动 session 心跳线程 (60s)
+# Payload: {"turn_proto": 1, "audio": {"codec":"opus","sr":16000,"channels":1},
+#           "character":"roman_centurion", "nfc_id":"sim-nfc", "mode":"dialogue",
+#           "fw":"1.6.0"}
 
-# Step 3: 发布 audio/start
-self._publish_audio_start()
-# Topic: devices/{device_id}/audio/start
-# Payload: {"format": "pcm", "sample_rate": 16000, "channels": 1}
+# Step 3: 等待 intro（chatbot 开场白 TTS）
+intro_ok = fw.wait_for_intro_completion(timeout=90)
+# ← 下行: response/audio/<sid>/0/start → chunk/<seq>* → eos
+# ← 辅助: response/audio/<sid>/0/introeos (首包已发)
 
-# Step 4: 分帧发送音频 chunk
-total_chunks = self._publish_audio_chunks(pcm_data)
-# Topic: devices/{device_id}/audio/chunk
-# Payload: Base64 编码的 PCM 数据
-# QoS: 0（不保证送达，追求速度）
-
-# Step 5: 发布 audio/eos（音频结束）
-self._publish_audio_eos(total_chunks, duration_ms)
-# Topic: devices/{device_id}/audio/eos
+# Step 4: 发送上行录音 turn
+turn_id = fw.start_turn(pcm_data)
+# → PUBLISH request/audio/<sid>/<turn_id>/start (QoS 1)
+# → PUBLISH request/audio/<sid>/<turn_id>/chunk/<seq>* (QoS 0, raw Opus bytes!)
+# → PUBLISH request/audio/<sid>/<turn_id>/eos (QoS 1)
 # Payload: {"total_seq": N, "duration_ms": M}
 
-# Step 6: 等待 chatbot 处理
-time.sleep(wait_time)  # 根据音频时长动态计算
+# Step 5: 等待 chatbot 响应
+fw.wait_for_turn_response(turn_id=turn_id, timeout=90, expect_downstream=True)
+# ← vadeos: response/audio/<sid>/<turn_id>/vadeos (STT 文本)
+# ← command: response/command/<sid>/<turn_id> (LLM 语义, 含 after_audio/preempt)
+# ← TTS: response/audio/<sid>/<turn_id>/start → chunk* → eos
+# → done: request/audio/<sid>/<turn_id>/done (播放回执)
 
-# Step 7: 发布 session/end
-self._publish_session_end()
-# Topic: devices/{device_id}/session/end
-# Payload: {"reason": "user_stop"}
+# Step 6: 结束会话
+fw.stop_session(reason="user_stop")
+# → PUBLISH request/session/<session_id>/end (QoS 1)
+# → 停止 session 心跳
 
-# Step 8: 断开连接
-self._disconnect()
+# Step 7: 设备保持在线，可发起下一次会话
 ```
 
-#### 4. 接收 chatbot 响应
+#### 4. 接收 chatbot 响应（通过 DeviceFirmware 回调）
 
 ```python
-# backend/mqtt_bridge.py - _on_message()
+# backend/mqtt_bridge.py - ConnectedDevice 注册的回调
 
-def _on_message(self, client, userdata, msg):
-    """收到服务端下行响应"""
-    resp_type, meta = self._parse_response_topic(msg.topic)
-    parsed = json.loads(msg.payload.decode("utf-8"))
-    
-    if resp_type == "vadeos":
-        # STT 识别结果
-        text = parsed.get("text", "")
-        self.result.stt_text = text
-        self.result.stt_confidence = parsed.get("confidence", 0.0)
-        
-        # 通过 WebSocket 推送给前端
-        self._emit("stt_result", {
-            "text": text,
-            "confidence": self.result.stt_confidence,
-        })
-    
-    elif resp_type == "audio_chunk":
-        # TTS 音频块
-        self.result.tts_chunks += 1
+def _on_fw_command(self, cmd: dict):
+    """收到 response/command/<sid>/<tid>"""
+    self._emit_device("command", {
+        "cmd": cmd.get("cmd", ""),
+        "preempt": cmd.get("preempt", False),
+        "after_audio": cmd.get("after_audio", False),
+        "turn_id": cmd.get("_turn_id"),
+        "params": cmd.get("params", {}),
+    })
+
+def _on_fw_cue(self, cue_id: str, audio_data: list):
+    """收到 cue 音频 turn (cue-1, cue-2 等)"""
+    self._emit_device("cue_start", {
+        "cue_id": cue_id,
+        "chunks": len(audio_data),
+    })
+
+def _on_fw_mqtt_event(self, event_type: str, data: dict):
+    """MQTT 事件回调"""
+    if event_type == "stt_inference":
+        # vadeos → STT 结果
+        pass
+    elif event_type == "tts_synthesis":
+        # TTS 合成状态 (start/complete)
+        pass
+    elif event_type == "introeos":
+        # intro 首包已发事件
+        pass
+    elif event_type == "llm_inference":
+        # LLM 推理完成
+        pass
 ```
 
-#### 5. WebSocket 实时推送
+#### 5. WebSocket 实时推送（保持不变）
 
 ```python
 # backend/server.py - WebSocket 端点
@@ -396,7 +435,7 @@ MYSQL_DATABASE=ZebbieDb
 本地 broker / simulator 这条线不是临时调试手段，而是沿着 MQTT 原型逐步演进出来的：
 
 - `MQTT Send Test`（Han Wu）先做了最基础的 MQTT 连通性验证：向测试 topic 发送 100 帧固定大小数据，确认 broker 通路可用。
-- `Mic->MQTT->STT->LLM->TTS->MQTT->Speaker`（Han Wu）说明更早期就已经有完整的音频链路原型，不只是单纯“能发消息”。
+- `Mic->MQTT->STT->LLM->TTS->MQTT->Speaker`（Han Wu）说明更早期就已经有完整的音频链路原型，不只是单纯"能发消息"。
 - `MQTT with input output using opus`、`MQTT Send Test with Chiptalk` 继续把链路往 opus 音频 + MQTT 设备协议方向推进。
 - 现有实现里的 `projects/chatbot/src/mqtt_test_client.py` 和 `tests/integration/mqtt/device_simulator.py`，分别可以视为参考客户端和集成测试模拟器的代码化落点。
 

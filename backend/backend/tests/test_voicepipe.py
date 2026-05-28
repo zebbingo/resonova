@@ -163,6 +163,60 @@ class TestResolveMQTTHost:
             assert len(host) > 0
 
 
+class TestDeviceFirmwareIntroWait:
+    def test_wait_for_intro_completion_accepts_audio_eos_fallback(self):
+        from scripts.device_firmware import DeviceFirmware
+
+        firmware = DeviceFirmware.__new__(DeviceFirmware)
+        firmware._intro_eos_event = threading.Event()
+        firmware._intro_audio_eos_event = threading.Event()
+        logs = []
+        firmware._log = logs.append
+
+        firmware._intro_audio_eos_event.set()
+
+        assert firmware.wait_for_intro_completion(timeout=0.1) is True
+        assert any("intro audio EOS received" in message for message in logs)
+
+
+class TestConnectedDeviceIntroWait:
+    def test_start_session_waits_for_combined_intro_completion_signal(self):
+        from mqtt_bridge import ConnectedDevice
+
+        class FakeFirmware:
+            def __init__(self):
+                self.session_id = "sess-123"
+                self.start_session_calls = 0
+                self.wait_for_intro_completion_calls = []
+
+            def start_session(self, **_kwargs):
+                self.start_session_calls += 1
+
+            def wait_for_intro_completion(self, timeout):
+                self.wait_for_intro_completion_calls.append(timeout)
+                return True
+
+        device = ConnectedDevice.__new__(ConnectedDevice)
+        device._connected = True
+        device._fw = FakeFirmware()
+        device._lock = threading.Lock()
+        device._simulating = False
+        device._stop_requested = False
+        device.device_id = "dev-1"
+        device.figurine_id = "fig-1"
+        device.mode = "dialogue"
+        device.nfc_id = "nfc-1"
+        device.session_id = None
+        device._emit_session = lambda *args, **kwargs: None
+        device._emit_device = lambda *args, **kwargs: None
+
+        session_id = device.start_session_and_await_intro()
+
+        assert session_id == "sess-123"
+        assert device._fw.start_session_calls == 1
+        assert device._fw.wait_for_intro_completion_calls == [90]
+
+
 class TestParseResponseTopic:
     def test_vadeos(self):
         from mqtt_bridge import MQTTDeviceSimulator
