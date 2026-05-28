@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, nextTick } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import type { AudioItem, FigurineConfig, StoryItem, MusicItem } from '../types'
 import { audioUrl, mediaStreamUrl, fetchFigurines, fetchStories, fetchMusic, fetchFigurineTTSAudios, generateTTS, fetchGeneratedVoices, generatedAudioUrl, translateText } from '../api'
 import type { GeneratedVoice } from '../types'
@@ -12,21 +12,58 @@ import {
 
 import InlineGenerator from './InlineGenerator.vue'
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   audios: AudioItem[]
   formatSize: (bytes: number) => string
-}>()
+  persistenceKey?: string
+}>(), {
+  persistenceKey: 'default',
+})
 
 const emit = defineEmits<{
-  updateStatus: [status: { figurineId?: string; mode?: string; isOnline?: boolean }]
+  updateStatus: [status: { figurineId?: string; mode?: string; isOnline?: boolean; mqttProfile?: string }]
 }>()
 
-const deviceId = ref(`sim-dev-${Math.random().toString(36).substr(2, 6)}`)
+function deviceStorageKey() {
+  return `vpp_device_id:${props.persistenceKey}`
+}
+
+function generateDeviceId() {
+  return `sim-dev-${Math.random().toString(36).slice(2, 8)}`
+}
+
+function loadSavedDeviceId() {
+  try {
+    const saved = localStorage.getItem(deviceStorageKey())
+    if (saved) return saved
+    const generated = generateDeviceId()
+    localStorage.setItem(deviceStorageKey(), generated)
+    return generated
+  } catch {
+    return generateDeviceId()
+  }
+}
+
+function persistDeviceId(id: string) {
+  try {
+    localStorage.setItem(deviceStorageKey(), id)
+  } catch {}
+}
+
+const deviceId = ref(loadSavedDeviceId())
 const figurineId = ref('')
 const mode = ref<'dialogue' | 'story' | 'music'>('dialogue')
 const selectedAudioId = ref<string>('')
 const selectedStoryId = ref<string>('')
 const selectedMusicId = ref<string>('')
+const mqttProfile = ref<'local' | 'relay' | 'custom' | 'aws_iot'>('local')
+const mqttEnv = ref('prod')
+const mqttHost = ref('localhost')
+const mqttPort = ref<number | null | ''>(1883)
+const mqttTls = ref<'default' | 'enabled' | 'disabled'>('disabled')
+const mqttTlsCaCert = ref('')
+const mqttTlsClientCert = ref('')
+const mqttTlsClientKey = ref('')
 
 const stories = ref<StoryItem[]>([])
 const musicList = ref<MusicItem[]>([])
@@ -44,11 +81,94 @@ const loadingLibrary = ref(false)
 
 const RECENT_KEY = 'vpp_recent_audios'
 const recentAudios = ref<GeneratedVoice[]>([])
+const BROKER_KEY = 'vpp_mqtt_broker_config'
 
 function loadRecentAudios() {
   try {
     const raw = localStorage.getItem(RECENT_KEY)
     if (raw) recentAudios.value = JSON.parse(raw)
+  } catch {}
+}
+
+function setLocalBrokerDefaults() {
+  mqttProfile.value = 'local'
+  mqttEnv.value = 'prod'
+  mqttHost.value = 'localhost'
+  mqttPort.value = 1883
+  mqttTls.value = 'disabled'
+}
+
+function applyBrokerProfile(profile: 'local' | 'relay' | 'custom' | 'aws_iot') {
+  const previous = mqttProfile.value
+  mqttProfile.value = profile
+
+  if (profile === 'local') {
+    setLocalBrokerDefaults()
+    mqttTlsCaCert.value = ''
+    mqttTlsClientCert.value = ''
+    mqttTlsClientKey.value = ''
+    return
+  }
+
+  if (profile === 'aws_iot') {
+    // AWS IoT: TLS on, port 8883 by default
+    mqttEnv.value = mqttEnv.value || 'development'
+    mqttHost.value = mqttHost.value || ''
+    mqttPort.value = mqttPort.value || 8883
+    mqttTls.value = 'enabled'
+    // TLS cert paths can be filled manually or auto-discovered by backend
+    return
+  }
+
+  if (previous === 'local') {
+    mqttEnv.value = ''
+    mqttHost.value = ''
+    mqttPort.value = null
+    mqttTls.value = 'default'
+  }
+}
+
+function loadBrokerConfig() {
+  try {
+    const raw = localStorage.getItem(BROKER_KEY)
+    if (!raw) {
+      setLocalBrokerDefaults()
+      return
+    }
+    const parsed = JSON.parse(raw)
+    mqttProfile.value = ['relay', 'custom', 'aws_iot'].includes(parsed.mqttProfile) ? parsed.mqttProfile : 'local'
+    mqttEnv.value = parsed.mqttEnv || (mqttProfile.value === 'local' ? 'prod' : '')
+    mqttHost.value = parsed.mqttHost || (mqttProfile.value === 'local' ? 'localhost' : '')
+    mqttPort.value = typeof parsed.mqttPort === 'number' ? parsed.mqttPort : (mqttProfile.value === 'local' ? 1883 : null)
+    if (parsed.mqttTlsMode === 'enabled' || parsed.mqttTlsMode === 'disabled' || parsed.mqttTlsMode === 'default') {
+      mqttTls.value = parsed.mqttTlsMode
+    } else if (typeof parsed.mqttTls === 'boolean') {
+      mqttTls.value = parsed.mqttTls ? 'enabled' : 'disabled'
+    } else {
+      mqttTls.value = mqttProfile.value === 'local' ? 'disabled' : (mqttProfile.value === 'aws_iot' ? 'enabled' : 'default')
+    }
+    if (mqttProfile.value === 'local') {
+      mqttTls.value = 'disabled'
+    }
+    // Restore TLS cert paths
+    if (parsed.mqttTlsCaCert) mqttTlsCaCert.value = parsed.mqttTlsCaCert
+    if (parsed.mqttTlsClientCert) mqttTlsClientCert.value = parsed.mqttTlsClientCert
+    if (parsed.mqttTlsClientKey) mqttTlsClientKey.value = parsed.mqttTlsClientKey
+  } catch {}
+}
+
+function saveBrokerConfig() {
+  try {
+    localStorage.setItem(BROKER_KEY, JSON.stringify({
+      mqttProfile: mqttProfile.value,
+      mqttEnv: mqttEnv.value,
+      mqttHost: mqttHost.value,
+      mqttPort: mqttPort.value,
+      mqttTlsMode: mqttTls.value,
+      mqttTlsCaCert: mqttTlsCaCert.value,
+      mqttTlsClientCert: mqttTlsClientCert.value,
+      mqttTlsClientKey: mqttTlsClientKey.value,
+    }))
   } catch {}
 }
 
@@ -72,6 +192,26 @@ const {
   stopSimulation,
 } = useMQTTSimulation()
 
+watch(deviceId, (next) => {
+  if (next) persistDeviceId(next)
+})
+
+function disconnectOnExit() {
+  if (!isConnected.value && !isSimulating.value && !isConnecting.value) return
+  void disconnectDevice()
+}
+
+if (typeof window !== 'undefined') {
+  window.addEventListener('beforeunload', disconnectOnExit)
+}
+
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('beforeunload', disconnectOnExit)
+  }
+  disconnectOnExit()
+})
+
 const showDeviceInfo = ref(false)
 const showTurnDetail = ref<string | null>(null)
 const copiedSttIdx = ref<number | null>(null)
@@ -86,6 +226,7 @@ const waveformTurnId = ref<string | null>(null)
 interface FigurineWithMediaCount extends FigurineConfig {
   story_count?: number
   music_count?: number
+  has_intro?: boolean
 }
 
 const figurines = ref<FigurineWithMediaCount[]>([])
@@ -98,21 +239,19 @@ async function loadFigurines() {
   try {
     const resp = await fetchFigurines()
     figurines.value = resp.figurines
-    
+
     initFlow()
     addStep('device', '设备激活', `设备 ID: ${deviceId.value}`)
     completeStep('device', '设备激活')
-    addStep('device', 'MQTT 通讯通道', '连接消息队列服务')
-    completeStep('device', 'MQTT 通讯通道')
+    addStep('device', 'MQTT 通道', '连接消息队列服务')
+    completeStep('device', 'MQTT 通道')
     addStep('device', '设备就绪', '等待角色配置')
     completeStep('device', '设备就绪')
-    
-    if (resp.figurines.length > 0 && !figurineId.value) {
-      figurineId.value = resp.figurines[0].figurine_id
-    }
+
+    // 让用户自己选择，不设默认值
   } catch (error: any) {
-    console.error('加载角色列表失败:', error)
-    figurineError.value = '加载角色失败，请检查后端服务'
+    console.error('Failed to load figurines:', error)
+    figurineError.value = 'Failed to load figurines, please check the backend service.'
   } finally {
     loadingFigurines.value = false
   }
@@ -120,6 +259,7 @@ async function loadFigurines() {
 
 onMounted(() => {
   loadRecentAudios()
+  loadBrokerConfig()
   loadFigurines()
 })
 
@@ -127,9 +267,9 @@ const groupedAudios = computed(() => {
   const groups: { source: string; label: string; items: AudioItem[] }[] = []
   const sources = ['model', 'testdata', 'realtime']
   const labels: Record<string, string> = {
-    model: '📦 模型测试',
-    testdata: '🧪 项目测试',
-    realtime: '🎙️ 真实录音',
+    model: '🤖 模型生成语音',
+    testdata: '📁 测试数据语音',
+    realtime: '🎤 实时录制语音',
   }
   
   for (const src of sources) {
@@ -184,13 +324,22 @@ watch(figurineId, (newVal) => {
   emit('updateStatus', { figurineId: newVal })
   
   if (newVal && flowStore.active) {
+    // 切换角色时清空旧步骤
+    const rolePhase = flowStore.phases.find(p => p.id === 'role')
+    if (rolePhase) rolePhase.steps.splice(0)
+
     const fig = figurines.value.find(f => f.figurine_id === newVal)
     const charName = fig?.character_name || newVal
-    addStep('role', `角色信息加载`, `加载角色 ${charName} 的配置`)
+    const stepId = addStep('role', '角色信息加载', `加载角色 ${charName} 的配置`)
     setTimeout(() => {
-      completeStep('role', `角色信息加载`)
-      addStep('role', `角色连接成功`, `🎭 ${charName} 就绪`)
-      completeStep('role', `角色连接成功`)
+      completeStep('role', stepId)
+      if (fig && !fig.has_intro) {
+        const nextId = addStep('role', '角色就绪', `🎁 ${charName} 无开场白配置，会话启动后由 LLM 处理`)
+        completeStep('role', nextId)
+      } else {
+        const nextId = addStep('role', '角色连接成功', `🎁 ${charName} 就绪`)
+        completeStep('role', nextId)
+      }
     }, 500)
   }
   
@@ -203,6 +352,10 @@ watch(() => state.isOnline, (newVal) => {
   emit('updateStatus', { isOnline: newVal })
 })
 
+watch(mqttProfile, (newVal) => {
+  emit('updateStatus', { mqttProfile: newVal })
+})
+
 function getCurrentAudioId(): string {
   if (mode.value === 'dialogue') {
     return selectedAudioId.value
@@ -213,17 +366,41 @@ function getCurrentAudioId(): string {
   }
 }
 
+function getBrokerConfig() {
+  const mqttTlsValue = mqttTls.value === 'default' ? undefined : mqttTls.value === 'enabled'
+  const parsedPort = mqttPort.value === '' ? undefined : (
+    typeof mqttPort.value === 'number' ? mqttPort.value : Number(mqttPort.value)
+  )
+  return {
+    mqttProfile: mqttProfile.value,
+    mqttEnv: mqttEnv.value.trim() || undefined,
+    mqttHost: mqttHost.value.trim() || undefined,
+    mqttPort: parsedPort !== undefined && Number.isFinite(parsedPort) ? parsedPort : undefined,
+    mqttTls: mqttTlsValue,
+    mqttTlsCaCert: mqttTlsCaCert.value.trim() || undefined,
+    mqttTlsClientCert: mqttTlsClientCert.value.trim() || undefined,
+    mqttTlsClientKey: mqttTlsClientKey.value.trim() || undefined,
+  }
+}
+
 async function handleConnect() {
   if (!figurineId.value) {
     alert('请先选择角色')
     return
   }
-  addStep('device', '设备连接', `连接 MQTT Broker: ${deviceId.value}`)
+  const brokerLabel = mqttProfile.value === 'local'
+    ? `本地 Mosquitto (${mqttHost.value.trim() || 'localhost'}${mqttPort.value ? `:${mqttPort.value}` : ':1883'})`
+    : (mqttHost.value.trim()
+      ? `${mqttHost.value.trim()}${mqttPort.value ? `:${mqttPort.value}` : ''}`
+      : (mqttEnv.value.trim() || '默认 broker'))
+  addStep('device', '设备连接', `连接 MQTT Broker: ${brokerLabel}`)
+  saveBrokerConfig()
   try {
     await connectDevice({
       deviceId: deviceId.value,
       figurineId: figurineId.value,
       mode: mode.value,
+      ...getBrokerConfig(),
     })
     completeStep('device', '设备连接', `${deviceId.value} 已上线`)
   } catch (err: any) {
@@ -235,6 +412,13 @@ function handleDisconnect() {
   disconnectDevice()
 }
 
+function regenerateDeviceId() {
+  if (isConnected.value || isSimulating.value || isConnecting.value) return
+  const next = generateDeviceId()
+  deviceId.value = next
+  persistDeviceId(next)
+}
+
 async function handleStart() {
   if (!isConnected.value) {
     await handleConnect()
@@ -243,11 +427,17 @@ async function handleStart() {
 
   const audioId = getCurrentAudioId()
   if (!audioId) {
-    alert('请先选择音频/故事/音乐')
+    alert('请先选择音频')
     return
   }
 
-  addStep('session', 'MQTT 会话启动', '连接后端 MQTT Broker')
+  const brokerLabel = mqttProfile.value === 'local'
+    ? `本地 Mosquitto (${mqttHost.value.trim() || 'localhost'}${mqttPort.value ? `:${mqttPort.value}` : ':1883'})`
+    : (mqttHost.value.trim()
+      ? `${mqttHost.value.trim()}${mqttPort.value ? `:${mqttPort.value}` : ''}`
+      : (mqttEnv.value.trim() || '默认 broker'))
+  addStep('session', 'MQTT 会话启动', `连接后端 MQTT Broker: ${brokerLabel}`)
+  saveBrokerConfig()
 
   const sessionPhase = flowStore.phases.find(p => p.id === 'session')
   if (sessionPhase) sessionPhase.expanded = true
@@ -258,9 +448,10 @@ async function handleStart() {
       figurineId: figurineId.value,
       mode: mode.value,
       audioId: audioId,
+      ...getBrokerConfig(),
     })
 
-    completeStep('session', 'MQTT 会话启动', `会话 ID: ${state.sessionId || ''}`)
+    completeStep('session', 'MQTT 会话启动', `Session ID: ${state.sessionId || ''}`)
 
     registerSimulation({
       deviceId: deviceId.value,
@@ -351,15 +542,20 @@ function toggleWaveform(turnId: string) {
 
 function turnStateLabel(s: TurnInfo['state']): string {
   const map: Record<TurnInfo['state'], string> = {
-    capturing: '🎙️ 录音中', uploading: '⬆️ 上传中', thinking: '🤔 思考中',
-    playing: '🔊 播放中', draining: '⏳ 排空中', done: '✅ 完成', aborted: '⛔ 中断',
+    capturing: 'capturing',
+    uploading: 'uploading',
+    thinking: 'thinking',
+    playing: 'playing',
+    draining: 'draining',
+    done: 'done',
+    aborted: 'aborted',
   }
   return map[s] || s
 }
 
 function turnTypeIcon(t: TurnInfo['type']): string {
-  const map: Record<TurnInfo['type'], string> = { user: '👤', tts: '🤖', cue: '🔔', command: '📋' }
-  return map[t] || '❓'
+  const map: Record<TurnInfo['type'], string> = { user: 'user', tts: 'tts', cue: 'cue', command: 'command' }
+  return map[t] || 'unknown'
 }
 
 function turnDuration(turn: TurnInfo): string {
@@ -370,9 +566,9 @@ function turnDuration(turn: TurnInfo): string {
 }
 
 function heartbeatAge(): string {
-  if (!state.lastHeartbeatAt) return '未启动'
+  if (!state.lastHeartbeatAt) return 'no heartbeat'
   const sec = Math.round((Date.now() - state.lastHeartbeatAt.getTime()) / 1000)
-  return sec < 60 ? `${sec}s 前` : `${Math.floor(sec / 60)}m${sec % 60}s 前`
+  return sec < 60 ? `${sec}s ago` : `${Math.floor(sec / 60)}m${sec % 60}s ago`
 }
 
 const heartbeatAlive = computed(() => {
@@ -383,7 +579,6 @@ const heartbeatAlive = computed(() => {
 function fmtTime(d: Date | undefined): string {
   if (!d) return ''
   return d.toLocaleTimeString('zh-CN', { hour12: false })
-
 }
 
 function commandAge(cmd: CommandInfo): string {
@@ -416,8 +611,8 @@ async function loadFigurineTTSAudios() {
     }
     ttsAudios.value = merged
   } catch (error: any) {
-    console.error('加载 TTS 音频失败:', error)
-    ttsAudioError.value = '加载 TTS 音频失败'
+    console.error('Failed to load TTS audios:', error)
+    ttsAudioError.value = 'Failed to load TTS audios'
   } finally {
     loadingTTS.value = false
   }
@@ -441,7 +636,7 @@ async function openLibraryBrowser() {
     const resp = await fetchGeneratedVoices(200, 0)
     libraryAudios.value = resp.records
   } catch (error: any) {
-    console.error('加载音频库失败:', error)
+    console.error('Failed to load voice library:', error)
   } finally {
     loadingLibrary.value = false
   }
@@ -494,7 +689,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
     background: rgba(0, 0, 0, 0.8); color: white; padding: 20px 40px;
     border-radius: 8px; z-index: 9999; font-size: 16px;
   `
-  loadingMsg.textContent = '⏳ 正在加载音频...'
+  loadingMsg.textContent = 'Loading...'
   document.body.appendChild(loadingMsg)
   
   try {
@@ -504,8 +699,8 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
       if (document.body.contains(loadingMsg)) document.body.removeChild(loadingMsg)
     }, 1000)
   } catch (err) {
-    console.error('播放失败:', err)
-    loadingMsg.textContent = '❌ 音频加载失败，请检查后端服务'
+    console.error('Playback preview failed:', err)
+    loadingMsg.textContent = 'Playback failed'
     setTimeout(() => {
       if (document.body.contains(loadingMsg)) document.body.removeChild(loadingMsg)
     }, 3000)
@@ -522,12 +717,12 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
         <span class="proto-badge">v1.6</span>
         <span class="fw-badge">fw {{ state.fwVersion }}</span>
         <span class="status-badge" :class="state.status">
-          {{ !isConnected && !isSimulating ? '⚪ 离线' :
-             isConnecting ? '🟡 连接中' :
-             state.status === 'idle' ? '⚪ 空闲' :
-             state.status === 'connecting' ? '🟡 连接中' :
-             state.status === 'active' ? '🟢 活跃' :
-             state.status === 'capturing' ? '🎙️ 录音中' :
+          {{ !isConnected && !isSimulating ? '⏹ 离线' :
+             isConnecting ? '🔄 连接中' :
+             state.status === 'idle' ? '⏸ 空闲' :
+             state.status === 'connecting' ? '🔄 连接中' :
+             state.status === 'active' ? '▶ 活跃' :
+             state.status === 'capturing' ? '🎤️ 录音中' :
              state.status === 'playing' ? '🔊 播放中' :
              state.status === 'completed' ? '✅ 完成' :
              state.status === 'error' ? '❌ 错误' : '未知' }}
@@ -536,9 +731,9 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
       
       <div class="header-right">
         <button v-if="state.heartbeatActive" class="btn-icon heartbeat-btn" :class="{ alive: heartbeatAlive }" @click="showDeviceInfo = !showDeviceInfo" title="心跳监控">
-          {{ heartbeatAlive ? '💚' : '💛' }}
+          {{ heartbeatAlive ? '' : '' }}
         </button>
-        <button v-if="!isSimulating" class="btn-refresh" @click="deviceId = `sim-dev-${Math.random().toString(36).substr(2, 6)}`" title="刷新设备ID">
+        <button v-if="!isSimulating" class="btn-refresh" @click="regenerateDeviceId" title="刷新设备ID">
           🔄
         </button>
       </div>
@@ -557,7 +752,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
         <span class="info-value">{{ state.cueCount }}</span>
       </div>
       <div class="info-row">
-        <span class="info-label">♥ 心跳</span>
+        <span class="info-label">❤️ 心跳</span>
         <span class="info-value" :class="{ 'text-green': heartbeatAlive, 'text-yellow': !heartbeatAlive }">
           {{ heartbeatAge() }}
         </span>
@@ -583,30 +778,62 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
       <select v-else v-model="figurineId" class="select-input">
         <option value="" disabled>-- 请选择角色 --</option>
         <option v-for="fig in figurines" :key="fig.figurine_id" :value="fig.figurine_id">
-          {{ fig.character_name }} ({{ fig.name }}) - 📖{{ fig.story_count || 0 }} 🎵{{ fig.music_count || 0 }}
+          {{ fig.character_name }} ({{ fig.name }}) - 📚 {{ fig.story_count || 0 }} 🎵 {{ fig.music_count || 0 }}
         </option>
       </select>
     </div>
 
     <!-- 模式选择 -->
     <div class="config-section">
-      <label>📱 设备模式</label>
+      <label>📣 设备模式</label>
       <div class="mode-buttons">
-        <button :class="['mode-btn', { active: mode === 'dialogue' }]" @click="mode = 'dialogue'">💬 对话</button>
-        <button :class="['mode-btn', { active: mode === 'story' }]" @click="mode = 'story'">📖 故事</button>
+        <button :class="['mode-btn', { active: mode === 'dialogue' }]" @click="mode = 'dialogue'">💰 对话</button>
+        <button :class="['mode-btn', { active: mode === 'story' }]" @click="mode = 'story'">📚 故事</button>
         <button :class="['mode-btn', { active: mode === 'music' }]" @click="mode = 'music'">🎵 音乐</button>
+      </div>
+    </div>
+
+    <div class="config-section broker-section">
+      <label>📳 MQTT Broker 配置</label>
+      <div class="broker-grid">
+        <select v-model="mqttProfile" class="search-input" @change="applyBrokerProfile(mqttProfile)">
+          <option value="local">本地 Mosquitto</option>
+          <option value="relay">Relay 中转</option>
+          <option value="custom">自定义 Broker</option>
+          <option value="aws_iot">AWS IoT Core</option>
+        </select>
+        <input v-model="mqttEnv" class="search-input" placeholder="环境前缀，如 development / prod" />
+        <input v-model="mqttHost" class="search-input" placeholder="Broker Host / 端点地址" />
+        <div class="broker-inline">
+          <input v-model.number="mqttPort" type="number" min="1" max="65535" class="search-input broker-port" placeholder="1883 / 8883" />
+          <select v-model="mqttTls" class="search-input broker-tls">
+            <option value="default">TLS 跟随默认</option>
+            <option value="enabled">TLS 开启</option>
+            <option value="disabled">TLS 关闭</option>
+          </select>
+        </div>
+        <!-- TLS 证书路径（仅 custom / aws_iot 显示） -->
+        <template v-if="mqttProfile === 'custom' || mqttProfile === 'aws_iot'">
+          <input v-model="mqttTlsCaCert" class="search-input" placeholder="CA 证书路径（可选，如 /certs/AmazonRootCA1.pem）" />
+          <input v-model="mqttTlsClientCert" class="search-input" placeholder="设备证书路径（可选，如 /certs/device.cert.pem）" />
+          <input v-model="mqttTlsClientKey" class="search-input" placeholder="私钥路径（可选，如 /certs/device.private.key）" />
+        </template>
+      </div>
+      <div class="broker-hint">
+        本地模式默认走 WSL Mosquitto；Relay / 自定义 / AWS IoT 可填远程 broker 参数。
+        AWS IoT Core 使用 TLS 端口 8883，后端支持从 AWS_IOT_CERT_ROOT 自动发现证书。
       </div>
     </div>
 
     <!-- 内容选择 -->
     <div class="content-section">
       <template v-if="mode === 'dialogue'">
-        <h4>🎤 选择 TTS 音频</h4>
+        <h4>📳 选择 TTS 音频</h4>
         <div class="tts-actions">
           <button class="btn-sm" @click="showInlineGenerator = !showInlineGenerator">
-            {{ showInlineGenerator ? '✕ 关闭生成' : '✨ 生成新语音' }}
+            {{ showInlineGenerator ? '✅ 关闭生成' : '✅ 生成新语音' }}
           </button>
-          <button class="btn-sm btn-outline" @click="openLibraryBrowser">📂 音频库</button>
+          <button class="btn-sm btn-outline" @click="openLibraryBrowser">📨 音频库</button>
         </div>
 
         <div v-if="showInlineGenerator">
@@ -623,7 +850,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
               <div class="content-desc">{{ (audio.text || '').slice(0, 60) }}{{ (audio.text || '').length > 60 ? '...' : '' }}</div>
               <div class="content-meta">{{ audio.duration_sec ? `${audio.duration_sec.toFixed(1)}s` : '' }} · {{ audio.gender }} / {{ audio.personality }}</div>
             </div>
-            <button class="btn-play-sm" @click.stop="playTTSPreview(audio)" title="预览播放">▶️</button>
+            <button class="btn-play-sm" @click.stop="playTTSPreview(audio)" title="preview">▶</button>
           </div>
         </div>
       </template>
@@ -639,13 +866,13 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
               <div class="content-desc">{{ story.description }}</div>
               <div class="content-meta">{{ story.duration }}s</div>
             </div>
-            <button class="btn-play" @click.stop="playPreview('story', story.id)" title="预览播放">▶️</button>
+            <button class="btn-play" @click.stop="playPreview('story', story.id)" title="preview">▶</button>
           </div>
         </div>
       </template>
 
       <template v-else-if="mode === 'music'">
-        <h4>🎶 选择音乐</h4>
+        <h4>🎵 选择音乐</h4>
         <div v-if="loadingMedia" class="loading">加载中...</div>
         <div v-else-if="musicList.length === 0" class="empty-list">暂无音乐数据</div>
         <div v-else>
@@ -655,7 +882,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
               <div class="content-desc">{{ music.artist }}</div>
               <div class="content-meta">{{ music.duration }}s</div>
             </div>
-            <button class="btn-play" @click.stop="playPreview('music', music.id)" title="预览播放">▶️</button>
+            <button class="btn-play" @click.stop="playPreview('music', music.id)" title="preview">▶</button>
           </div>
         </div>
       </template>
@@ -666,8 +893,8 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
       <!-- 活跃 Turn 折叠区 -->
       <div class="v16-section">
         <div class="v16-header" @click="toggleDeviceInfo">
-          <span>▼ 活跃 Turn ({{ state.activeTurns.length }})</span>
-          <span v-if="state.cueCount > 0" class="cue-badge">🔔 {{ state.cueCount }} cue</span>
+          <span>▶ 活跃 Turn ({{ state.activeTurns.length }})</span>
+          <span v-if="state.cueCount > 0" class="cue-badge">📨 {{ state.cueCount }} cue</span>
         </div>
         <div v-if="showDeviceInfo || state.activeTurns.length > 0" class="v16-body">
           <div v-if="state.activeTurns.length === 0" class="v16-empty">暂无活跃 Turn</div>
@@ -721,7 +948,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
           <div v-for="(text, idx) in state.sttTexts.slice(-10)" :key="idx" class="stt-row" @click="copySttText(text, idx)">
             <span class="stt-index">#{{ idx + 1 }}</span>
             <span class="stt-text">{{ text }}</span>
-            <span class="stt-copy">{{ copiedSttIdx === idx ? '✅' : '📋' }}</span>
+            <span class="stt-copy">{{ copiedSttIdx === idx ? '✔' : '🔍' }}</span>
           </div>
         </div>
       </div>
@@ -734,9 +961,9 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
         <div class="v16-body">
           <div v-if="state.commands.length === 0" class="v16-empty">暂无 Command</div>
           <div v-for="(cmd, idx) in state.commands.slice(-10).reverse()" :key="idx" class="cmd-row" :class="{ preempt: cmd.preempt, after_audio: cmd.afterAudio }">
-            <span v-if="cmd.preempt" class="cmd-badge preempt">🔥 PREEMPT</span>
-            <span v-else-if="cmd.afterAudio" class="cmd-badge after">⏳ AFTER</span>
-            <span v-else class="cmd-badge normal">📩</span>
+            <span v-if="cmd.preempt" class="cmd-badge preempt">📢 PREEMPT</span>
+            <span v-else-if="cmd.afterAudio" class="cmd-badge after">🎵 AFTER</span>
+            <span v-else class="cmd-badge normal">📌</span>
             <span class="cmd-name">{{ cmd.cmd }}</span>
             <span v-if="cmd.turnId" class="cmd-turn">turn={{ cmd.turnId }}</span>
             <span class="cmd-age">{{ commandAge(cmd) }}</span>
@@ -748,7 +975,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
       <div class="v16-section">
         <div class="v16-header">
           <span>
-            <button class="btn-tab" :class="{ active: showOtaPanel }" @click.stop="toggleOtaPanel">📦 OTA</button>
+            <button class="btn-tab" :class="{ active: showOtaPanel }" @click.stop="toggleOtaPanel">📝 OTA</button>
             <button class="btn-tab" :class="{ active: showConfigPanel }" @click.stop="toggleConfigPanel">⚙️ Config</button>
           </span>
         </div>
@@ -756,7 +983,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
           <div class="detail-row"><span class="detail-label">当前版本</span><span>{{ state.otaStatus.currentVersion }}</span></div>
           <div v-if="state.otaStatus.targetVersion" class="detail-row"><span class="detail-label">目标版本</span><span>{{ state.otaStatus.targetVersion }}</span></div>
           <div class="detail-row">
-            <span class="detail-label">状态</span>
+            <span class="detail-label">Status</span>
             <span :class="{
               'text-green': state.otaStatus.status === 'success',
               'text-yellow': state.otaStatus.status === 'downloading',
@@ -767,7 +994,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
         <div v-if="showConfigPanel" class="v16-body">
           <div class="detail-row"><span class="detail-label">版本</span><span>{{ state.configStatus.ver }}</span></div>
           <div class="detail-row">
-            <span class="detail-label">状态</span>
+            <span class="detail-label">Status</span>
             <span :class="{
               'text-green': state.configStatus.status === 'applied',
               'text-yellow': state.configStatus.status === 'applying',
@@ -782,15 +1009,15 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
     <div class="control-section">
       <template v-if="!isConnected && !isSimulating">
         <button class="btn-connect" :disabled="isConnecting || !figurineId" @click="handleConnect">
-          {{ isConnecting ? '⏳ 连接中...' : '🔌 连接设备' }}
+          {{ isConnecting ? '🔄 连接中...' : '🔲 连接设备' }}
         </button>
       </template>
       <template v-else-if="isConnected && !isSimulating">
-        <button class="btn-start" :disabled="!getCurrentAudioId()" @click="handleStart">🟢 开始测试</button>
-        <button class="btn-disconnect" @click="handleDisconnect">🔌 断开设备</button>
+        <button class="btn-start" :disabled="!getCurrentAudioId()" @click="handleStart">▶ Start</button>
+        <button class="btn-disconnect" @click="handleDisconnect">🔲 断开设备</button>
       </template>
       <template v-else-if="isSimulating">
-        <button class="btn-stop" @click="handleStop">🔴 停止模拟</button>
+        <button class="btn-stop" @click="handleStop">🔶 停止模拟</button>
       </template>
     </div>
 
@@ -800,7 +1027,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
     <div v-if="showLibraryBrowser" class="modal-overlay" @click.self="closeLibraryBrowser">
       <div class="modal-content">
         <div class="modal-header">
-          <h3>📂 TTS 音频库</h3>
+          <h3>TTS Audio Library</h3>
           <button class="modal-close" @click="closeLibraryBrowser">✕</button>
         </div>
         <div class="modal-search">
@@ -808,7 +1035,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
         </div>
         <div class="modal-body">
           <div v-if="loadingLibrary" class="modal-loading">加载中...</div>
-          <div v-else-if="filteredLibraryAudios.length === 0" class="modal-empty">没有匹配的音频</div>
+          <div v-else-if="filteredLibraryAudios.length === 0" class="modal-empty">No matching audio</div>
           <div v-else class="modal-list">
             <div v-for="audio in filteredLibraryAudios" :key="audio.id" class="modal-item" :class="{ active: selectedAudioId === `tts/${audio.id}` }" @click="selectFromLibrary(audio)">
               <div class="modal-item-info">
@@ -817,15 +1044,15 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
                 <div class="modal-item-meta">
                   {{ audio.duration_sec ? `${audio.duration_sec.toFixed(1)}s` : '' }}
                   {{ audio.gender }} / {{ audio.personality }}
-                  {{ audio.created_at ? `· ${new Date(audio.created_at).toLocaleDateString()}` : '' }}
+                  {{ audio.created_at ? ` · ${new Date(audio.created_at).toLocaleDateString()}` : '' }}
                 </div>
               </div>
-              <button class="btn-play-sm" @click.stop="playTTSPreview(audio)" title="预览">▶️</button>
+              <button class="btn-play-sm" @click.stop="playTTSPreview(audio)" title="preview">▶</button>
             </div>
           </div>
         </div>
         <div class="modal-footer">
-          <span>{{ filteredLibraryAudios.length }} / {{ libraryAudios.length }} 条</span>
+          <span>{{ filteredLibraryAudios.length }} / {{ libraryAudios.length }} items</span>
           <button class="btn-close" @click="closeLibraryBrowser">关闭</button>
         </div>
       </div>
@@ -1271,6 +1498,33 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
   margin-bottom: 6px;
 }
 
+.broker-grid {
+  display: grid;
+  gap: 8px;
+}
+
+.broker-inline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.broker-port {
+  width: 140px;
+  flex: 0 0 140px;
+}
+
+.broker-tls {
+  flex: 1;
+}
+
+.broker-hint {
+  margin-top: 6px;
+  color: var(--text2);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
 .select-input {
   width: 100%;
   background: var(--surface2);
@@ -1607,3 +1861,4 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
 
 .btn-close:hover { border-color: var(--accent); }
 </style>
+
