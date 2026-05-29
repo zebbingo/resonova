@@ -122,7 +122,7 @@
 | 1 | **WiFi 连接耗时 2~5s** | MQTT 连接 <100ms | 会话建立时间不可比 |
 | 2 | **WiFi 断连处理**：自动重连 + session 恢复 | ⚠️ paho 自动重连，但不恢复 session | 重连行为差异 |
 | 3 | **MQTT 断线**：LWT → broker 发 offline | ✅ LWT 已设 | 基本一致 |
-| 4 | **网络延迟**：100~500ms RTT（云端） | <1ms（本地 Mosquitto） | **关键差距**——本地测的延迟远好于真实 |
+| 4 | **网络延迟**：100~500ms RTT（云端） | <1ms（本地 NanoMQ，⚠️ Mosquitto 已弃用） | **关键差距**——本地测的延迟远好于真实 |
 | 5 | **多 device 并发**：几十万设备同时在线 | ⚠️ 最多 10 个并发 | 服务器压力测不到 |
 
 ### 对语音指令测试的影响
@@ -205,3 +205,40 @@
 ---
 
 > **总结：stt-test-tool 是一个优秀的协议层模拟器，覆盖了 95% 的 MQTT 信令行为。对于验证语音指令拦截逻辑（你的 4 步计划的第 3 步），唯一不能模拟的是真实 WiFi 延迟和麦克风噪声对 STT 的影响——但指令路由逻辑本身在模拟环境中已经是可信的测试结果。**
+
+---
+
+## ⚠️ 2026-05-29 实测定更新：执行层阻断性问题
+
+> 经实际全链路测试发现，上述理论覆盖度分析忽略了两个执行层阻断性问题，导致端到端链路**实际未打通**。
+
+### 实测发现的问题
+
+| # | 问题 | 严重度 | 发现方式 |
+|:-:|:-----|:------:|:---------|
+| 1 | **模拟引擎竞态条件**：`start_simulation()` 在设备正在模拟时收到新请求，后台线程因 `"Device already has an active session"` 静默失败 | 🔴 CRITICAL | 服务器日志排查 |
+| 2 | **chatbot 不回响应**：即使音频 chunk 成功发送到 MQTT broker，`wait_for_turn_response()` 始终 90s 超时，STT/TTS 全部为空 | 🔴 CRITICAL | test result 分析 |
+| 3 | **错误不可见**：后台线程异常被 `except` 捕获仅记日志，用户通过 API 看到的是 200 OK，实际模拟未执行 | 🔴 CRITICAL | 代码审查 |
+
+### 对"模拟测试充分性"判定的修正
+
+之前结论为"95% 协议层覆盖，可支撑指令拦截测试"。实际测试后发现：
+
+**尽管协议层设计覆盖充分，但执行层的两个阻断问题导致模拟流程无法正常完成。** 在修复之前，"全链路测试"不可行。
+
+### 修复后需重测
+
+1. **修复竞态条件** → 验证连续 simulate 请求正常
+2. **切换 VAD 模式为 EOS 触发或降低 VAD 阈值** → 验证 chatbot STT/TTS 管道正常响应
+3. **重新跑 `full_link_test.py`** → 确认 end-to-end 通过
+
+### 技术细节（2026-05-29 诊断确认）
+
+- chatbot 使用 `bot_mqtt.py`（PID 361840，独立进程）处理 MQTT 音频，**非** `bot_runner.py`
+- 管道默认运行在 VAD 模式（`MQTT_HANDLE_VAD_ON_SERVER=true`）
+- SileroVADAnalyzer（默认置信度 0.8）**从未检测到语音**，导致 STT 不被触发
+- 所有 33 个线程均处于 S (sleeping) 空闲等待状态
+- 直接修复实验：`export MQTT_HANDLE_VAD_ON_SERVER=false` 可绕过 VAD，
+  改为由 EOS 消息直接触发 STT 处理
+
+> 详见完整测试报告: [`15-full-link-test-report.md`](15-full-link-test-report.md)

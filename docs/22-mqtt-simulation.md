@@ -34,7 +34,7 @@ STT 测试平台提供**真实的 MQTT 设备模拟**功能，通过标准 MQTT 
 graph TB
     A[Windows: Frontend/Vue] -->|HTTP POST| B[Windows: Backend/FastAPI]
     B -->|WebSocket| A
-    B -->|MQTT TCP| C[WSL: Mosquitto Broker]
+    B -->|MQTT TCP| C[WSL: NanoMQ Broker]
     C -->|MQTT Publish| D[WSL: Chatbot Backend]
     D -->|MQTT Response| C
     C -->|MQTT Subscribe| B
@@ -51,7 +51,7 @@ graph TB
 |------|----------|------|
 | **Frontend** | Windows | Vue 3 前端，用户界面 |
 | **Backend** | Windows | FastAPI 后端，MQTT 模拟器管理 |
-| **Mosquitto** | WSL | MQTT Broker，消息路由 |
+| **NanoMQ** | WSL | MQTT Broker（2026-04-21 替代 Mosquitto），消息路由 |
 | **Chatbot** | WSL | chatbot 后端，STT/TTS 处理 |
 
 ---
@@ -79,7 +79,7 @@ sequenceDiagram
     participant F as Frontend (Vue)
     participant B as Backend (FastAPI)
     participant D as DeviceFirmware
-    participant M as Mosquitto (WSL)
+    participant M as NanoMQ (WSL)
     participant C as Chatbot (WSL)
     
     Note over D: DeviceFirmware.power_on()
@@ -401,7 +401,7 @@ async def websocket_endpoint(websocket: WebSocket, session_id: str):
 # .env 文件
 
 # MQTT Broker 配置
-MQTT_HOST=localhost          # WSL 中的 Mosquitto 地址
+MQTT_HOST=localhost          # WSL 中的 NanoMQ 地址（2026-04-21 升级）
 MQTT_PORT=1883               # MQTT 端口
 MQTT_ENV=development         # 环境标识
 MQTT_TLS=false               # 是否使用 TLS
@@ -428,7 +428,7 @@ MYSQL_DATABASE=ZebbieDb
   - `Setup EMQX for Yusheng`
   - Assignee: `Han Wu`
   - 这说明 broker 基础设施曾以 EMQX 任务形式被单独搭建和维护。
-- 当前测试平台默认连本地 Mosquitto；需要更贴近生产时，可以显式切到 relay / remote broker。
+- 当前测试平台默认连本地 NanoMQ；需要更贴近生产时，可以显式切到 relay / remote broker。
 
 ### 历史实现线索
 
@@ -439,7 +439,7 @@ MYSQL_DATABASE=ZebbieDb
 - `MQTT with input output using opus`、`MQTT Send Test with Chiptalk` 继续把链路往 opus 音频 + MQTT 设备协议方向推进。
 - 现有实现里的 `projects/chatbot/src/mqtt_test_client.py` 和 `tests/integration/mqtt/device_simulator.py`，分别可以视为参考客户端和集成测试模拟器的代码化落点。
 
-所以，本地 Mosquitto、MQTT 模拟器、设备模拟应该统一视为**测试平台基础设施**的一部分，而不是临时调试附属品。
+所以，本地 NanoMQ、MQTT 模拟器、设备模拟应该统一视为**测试平台基础设施**的一部分，而不是临时调试附属品。
 
 ### 最大并发数
 
@@ -549,7 +549,7 @@ curl http://localhost:8765/api/device/history?limit=10&offset=0
 
 ### 1. 真实 MQTT 通信
 
-- **不是模拟**：使用 `paho-mqtt` 库真实连接 Mosquitto Broker
+- **不是模拟**：使用 `paho-mqtt` 库真实连接 NanoMQ Broker
 - **标准协议**：完全遵循 MQTT v3.1.1 协议规范
 - **QoS 支持**：session 消息使用 QoS 1（保证送达），chunk 使用 QoS 0（追求速度）
 
@@ -579,12 +579,15 @@ curl http://localhost:8765/api/device/history?limit=10&offset=0
 
 **现象**：`MQTT 连接失败: [Errno 111] Connection refused`
 
-**原因**：Mosquitto 服务未启动
+**原因**：NanoMQ 服务未启动（2026-04-21 升级，替代 Mosquitto）
 
 **解决**：
 ```bash
 wsl
-sudo service mosquitto start
+sudo nanomq start
+
+# 检查状态
+bash scripts/wsl/check-mqtt-broker.sh
 ```
 
 ### Q2: 音频未缓存
@@ -646,7 +649,7 @@ sudo service mosquitto start
 
 **当前架构（黑盒测试）**：
 ```
-Frontend → Backend (MQTT Simulator) → Mosquitto → Chatbot Backend
+Frontend → Backend (MQTT Simulator) → NanoMQ → Chatbot Backend
                                     ↑
                               外部调用，无法监控内部流程
 ```

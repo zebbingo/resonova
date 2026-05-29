@@ -175,7 +175,7 @@ pnpm build
 | stt-test-tool 前端 | — | :5173 | Vite 开发服务器 |
 | chatbot 后端 | :7860 | :7860 (portproxy) | bot_runner |
 | chatbot 前端 | :3000 | :3000 (portproxy) | Next.js |
-| MQTT Broker | :1883 | — | Mosquitto（仅 WSL） |
+| MQTT Broker | :1883 | — | NanoMQ（仅 WSL，2026-04-21 替代 Mosquitto） |
 
 ---
 

@@ -70,7 +70,7 @@
 {"profile": "local"}
 ```
 
-可选 profile：`local`（本地 Mosquitto）、`cloud`（AWS IoT Core）。
+可选 profile：`local`（本地 NanoMQ，⚠️ Mosquitto 已弃用）、`cloud`（AWS IoT Core）。
 
 切换 profile 会自动更新环境变量并重启受影响的服务。
 
@@ -98,7 +98,7 @@
 
 | Profile | Broker | 环境变量 |
 |---------|--------|---------|
-| **local** | WSL Mosquitto (127.0.0.1:1883) | `CHATBOT_MQTT_ENV=prod`, `CHATBOT_MQTT_HOST=127.0.0.1`, `CHATBOT_MQTT_PORT=1883` |
+| **local** | WSL NanoMQ (127.0.0.1:1883，⚠️ Mosquitto 已弃用） | `CHATBOT_MQTT_ENV=prod`, `CHATBOT_MQTT_HOST=127.0.0.1`, `CHATBOT_MQTT_PORT=1883` |
 | **cloud** | AWS IoT Core (eu-west-2:8883) | `CHATBOT_MQTT_ENV=production`, `CHATBOT_MQTT_HOST=<endpoint>.iot.eu-west-2.amazonaws.com`, `CHATBOT_MQTT_PORT=8883` |
 
 ---
@@ -144,7 +144,7 @@ MQTT_HOST=127.0.0.1
   "switch_groups": [
     {
       "key": "MQTT_HOST",
-      "description": ["本地开发默认连 127.0.0.1:1883（WSL Mosquitto）", "UAT relay: 取消注释 server-sg.zebbingo.com 行"],
+      "description": ["本地开发默认连 127.0.0.1:1883（WSL NanoMQ，⚠️ Mosquitto 已弃用）", "UAT relay: 取消注释 server-sg.zebbingo.com 行"],
       "options": [
         {"value": "server-sg.zebbingo.com", "active": false, "line": 63},
         {"value": "127.0.0.1", "active": true, "line": 64}

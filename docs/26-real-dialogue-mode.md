@@ -37,7 +37,7 @@ devices/{device_id}/response/session/{session_id}/audio/eos
 sequenceDiagram
     participant U as User (Frontend)
     participant T as Test Platform Backend
-    participant M as Mosquitto Broker
+    participant M as NanoMQ Broker（⚠️ Mosquitto 已弃用）
     participant C as Chatbot Backend
     
     Note over U,C: 阶段 1: 选择角色 & 获取开场白
@@ -367,7 +367,7 @@ def setup_response_listener(mqtt_client, session_id: str, websocket: WebSocket):
 # .env
 
 # MQTT Broker
-MQTT_HOST=localhost          # WSL 中的 Mosquitto
+MQTT_HOST=localhost          # WSL 中的 NanoMQ（⚠️ Mosquitto 已弃用）
 MQTT_PORT=1883
 
 # Chatbot 配置
