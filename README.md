@@ -25,4 +25,16 @@ cd frontend
 pnpm dev
 ```
 
-Frontend auto-proxies `/api` and `/ws` to `http://192.168.52.134:8765`.
+Frontend auto-proxies `/api` and `/ws` to http://192.168.52.134:8765.
+
+## Docs
+
+See [docs/00-quickstart.md](docs/00-quickstart.md) for a quick overview.
+Documentation is organized by category and number:
+
+| Range | Category |
+|-------|----------|
+| 00     | Quickstart |
+| 13-20  | Architecture and design docs |
+| 21-28  | Feature docs |
+| 29-34  | Implementation and monitoring |
