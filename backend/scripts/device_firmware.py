@@ -525,7 +525,7 @@ class DeviceFirmware:
 
         Returns dict with tts_response_count (number of downstream audio/start
         received), tts_chunks (total downstream audio chunks), and
-        tts_duration_ms (placeholder, currently 0).
+        tts_duration_ms (computed from chunk count × OPUS_FRAME_MS).
         """
         total_responses = 0
         total_chunks = 0
@@ -537,7 +537,7 @@ class DeviceFirmware:
         return {
             "tts_response_count": total_responses,
             "tts_chunks": total_chunks,
-            "tts_duration_ms": 0,
+            "tts_duration_ms": total_chunks * _OPUS_FRAME_MS,
         }
 
     def _flush_after_audio_commands(self, turn_id: str):
@@ -574,6 +574,7 @@ class DeviceFirmware:
             self._log("[FW] MQTT connected")
 
     def _on_disconnect(self, client, userdata, rc, properties=None):
+        self._connected.clear()
         self._log(f"[FW] MQTT disconnected: rc={rc}")
 
     def _on_message(self, client, userdata, msg):
@@ -756,7 +757,9 @@ class DeviceFirmware:
         return f"{self.base_topic}/request/{suffix}"
 
     def _publish_request(self, suffix: str, payload: str, qos: int = 1):
-        self._client.publish(self._request_topic(suffix), payload, qos=qos)
+        result = self._client.publish(self._request_topic(suffix), payload, qos=qos)
+        if not self._connected.is_set() or result.rc != 0:
+            self._log(f"[FW] publish FAILED topic={self._request_topic(suffix)} rc={result.rc} connected={self._connected.is_set()}")
 
     def _set_state(self, state: DeviceState):
         self.state = state
