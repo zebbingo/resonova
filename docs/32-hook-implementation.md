@@ -162,7 +162,7 @@ async def broadcast_monitoring_event(event: dict):
 
 ```mermaid
 graph LR
-    A[Device] -->|MQTT| B[Mosquitto]
+    A[Device] -->|MQTT| B[NanoMQ（⚠️ Mosquitto 已弃用）]
     B -->|MQTT| C[Chatbot Backend]
     
     subgraph "Chatbot Backend"

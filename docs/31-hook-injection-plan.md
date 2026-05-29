@@ -17,7 +17,7 @@
 
 ```mermaid
 graph TB
-    A[Device] -->|MQTT| B[Mosquitto Broker]
+    A[Device] -->|MQTT| B[NanoMQ Broker（⚠️ Mosquitto 已弃用）]
     B -->|MQTT| C[Chatbot Backend]
     
     subgraph "Chatbot Backend (WSL)"

@@ -232,7 +232,7 @@ RTF (实时因子)   0.012       ← 绿色高亮
   ↓ HTTP POST /api/device/simulate
 FastAPI 后端 (stt-test-tool :8765)
   ↓ MQTT Publish
-Mosquitto Broker (:1883)
+NanoMQ Broker (:1883，⚠️ Mosquitto 已弃用)
   ↓ MQTT Subscribe
 Chatbot Backend (projects/chatbot/src)
   ↓ STT/VAD/LLM/TTS 处理
