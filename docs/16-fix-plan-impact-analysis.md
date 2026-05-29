@@ -96,7 +96,7 @@ if old_thread and old_thread.is_alive():
 
 ### 🛠️ 修复方案（按优先级排列）
 
-#### 方案 A：环境变量绕过（最快，5 分钟生效）
+#### 方案 A：环境变量绕过（最快，5 分钟生效）⭐ 已验证通过
 ```bash
 # 重启 bot_mqtt 前设置
 export MQTT_HANDLE_VAD_ON_SERVER=false
@@ -105,35 +105,26 @@ export MQTT_SHOULD_SEND_RESPONSE_CHUNK=true
 ```
 **原理：** 关闭 VAD 模式后，EOS 消息直接触发 `_finalize_turn_input` → 调用 STT
 **优点：** 零代码改动，立即验证管道是否正常
-**缺点：** 真实设备需要 VAD（设备端 VAD 做分帧，服务端 VAD 做二次确认）
+**缺点：** 测试平台也需要测试 VAD，不能永远 bypass
+**验证：** 2026-05-29 16:35 实测通过（STT: "Can you speak Chinese." → LLM → TTS: 319 chunks）
 
-#### 方案 B：降低 VAD 阈值（折中方案）
-```bash
-export MQTT_VAD_CONFIDENCE=0.3
-# 重启 bot_mqtt
-```
-**原理：** 降低 SileroVAD 判断语音的置信度门槛，让模拟音频也能触发
-**优点：** 保留 VAD 模式，真实设备更灵敏
-**缺点：** 可能增加误触发（噪声被当作语音）
+#### 方案 B：代码级 VAD 回退修复（长期方案）⭐ 已实现并验证
+在 `vad_stt_segmenter.py` + `mqtt_input_transport.py` 中实现：
 
-#### 方案 C：代码级修复（长期方案）
-在 `mqtt_input_transport.py` 中修改 `_handle_vad_timeout`：
-```python
-async def _handle_vad_timeout(self):
-    if not self._vad_segmenter:
-        return
-    # 即使 VAD 在 QUIET 状态，如果已收到音频，强制触发 STT
-    if self._vad_segmenter.vad_state != VADState.SPEAKING:
-        if self._has_received_audio():
-            logger.warning("VAD timeout but audio received — force-triggering STT")
-            self._schedule_vad_stt(session_id, turn_id, 
-                                   speech_audio=self._vad_segmenter.get_buffered_audio())
-            return
-        return  # 没有音频，正常返回
-    ...
-```
-**优点：** 从根本上解决 VAD 漏检问题
-**缺点：** 需要修改代码、测试、部署
+**`vad_stt_segmenter.py` 改动：**
+1. 新增 `_turn_audio_snapshot` 字节缓冲区：**积累当前 turn 的所有音频**（无论 VAD 状态）
+2. `process_audio()` 每次调用时检测 turn_id 变更，自动清空快照
+3. `force_stop()` 在 QUIET 状态时返回快照音频，附带 `speech_stopped=True`
+4. `reset()` 同步清空快照
+
+**`mqtt_input_transport.py` 改动：**
+1. `_handle_vad_timeout()` 移除了 `vad_state != SPEAKING` 的 early return
+2. 始终调用 `force_stop()`，如有音频则触发 `_handle_vad_event()` → 启动 STT
+
+**验证：** 单元测试通过（Mock VAD, 2s audio, 64000 bytes）：
+- ✅ `force_stop()` 在 QUIET 状态返回 `speech_stopped=True` + 完整音频
+- ✅ turn 边界检测正确，新 turn 清空快照
+- ✅ `reset()` 正确清理所有状态
 
 ### ⚠️ 副作用与风险
 
