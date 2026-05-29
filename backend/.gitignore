@@ -49,7 +49,7 @@ test_*.py
 test_*.sh
 debug_*.py
 check_*.py
-commands.yaml
+# commands.yaml deliberately tracked — required config for CommandRuleEngine
 
 # Device configs (auto-generated)
 scripts/devices/

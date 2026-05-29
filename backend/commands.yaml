@@ -1,0 +1,358 @@
+# =============================================================================
+# VoicePipe 测试平台 — 指令配置
+# =============================================================================
+# 本文件定义测试平台中所有指令相关配置，包括：
+#   1. kws_keywords —— KWS 关键词 → 指令映射
+#   2. command_intents —— 意图 → 指令映射
+#   3. mqtt_commands —— MQTT 十六进制操作指令
+#   4. command_filters —— 文本清理 / 拦截规则
+# =============================================================================
+
+# ── 1. KWS 关键词映射 ──────────────────────────────────────────────────────
+# 每一条定义 STT 识别到特定关键词后应触发哪个指令
+kws_keywords:
+  - id: "play_music"
+    keyword: "播放音乐"
+    command: "PLAY_MUSIC"
+    mode: ["music"]
+    description: "切换到音乐播放模式"
+    enabled: true
+
+  - id: "next_track"
+    keyword: "下一首"
+    command: "NEXT_TRACK"
+    mode: ["music", "story"]
+    description: "切换到下一曲目"
+    enabled: true
+
+  - id: "prev_track"
+    keyword: "上一首"
+    command: "PREV_TRACK"
+    mode: ["music", "story"]
+    description: "切换到上一曲目"
+    enabled: true
+
+  - id: "pause"
+    keyword: "暂停"
+    command: "PAUSE"
+    mode: ["music", "story"]
+    description: "暂停当前播放"
+    enabled: true
+
+  - id: "resume"
+    keyword: "继续播放"
+    command: "RESUME"
+    mode: ["music", "story"]
+    description: "恢复播放"
+    enabled: true
+
+  - id: "stop"
+    keyword: "停止"
+    command: "STOP"
+    mode: ["music", "story", "dialogue"]
+    description: "停止当前操作"
+    enabled: true
+
+  - id: "volume_up"
+    keyword: "大声一点"
+    command: "VOLUME_UP"
+    mode: ["music", "story", "dialogue"]
+    description: "增加音量"
+    enabled: true
+
+  - id: "volume_down"
+    keyword: "小声一点"
+    command: "VOLUME_DOWN"
+    mode: ["music", "story", "dialogue"]
+    description: "减小音量"
+    enabled: true
+
+  - id: "switch_to_dialogue"
+    keyword: "对话模式"
+    command: "SWITCH_MODE_DIALOGUE"
+    mode: ["music", "story"]
+    description: "切换到对话模式"
+    enabled: true
+
+  - id: "switch_to_story"
+    keyword: "讲故事"
+    command: "SWITCH_MODE_STORY"
+    mode: ["dialogue", "music"]
+    description: "切换到故事模式"
+    enabled: true
+
+  - id: "repeat"
+    keyword: "再说一遍"
+    command: "REPEAT"
+    mode: ["dialogue", "story", "music"]
+    description: "重复上一句回复"
+    enabled: true
+
+# ── 2. 指令意图映射 ──────────────────────────────────────────────────────
+# 定义 LLM 识别出的用户意图 → 具体指令的映射
+command_intents:
+  - id: "play_music_intent"
+    intent: "play_music"
+    command: "PLAY_MUSIC"
+    session_mode: ["music"]
+    description: "用户意图播放音乐"
+    priority: 10
+    enabled: true
+
+  - id: "play_story_intent"
+    intent: "play_story"
+    command: "PLAY_STORY"
+    session_mode: ["story"]
+    description: "用户意图播放故事"
+    priority: 10
+    enabled: true
+
+  - id: "stop_playback"
+    intent: "stop_playback"
+    command: "STOP"
+    session_mode: ["dialogue", "story", "music"]
+    description: "用户意图停止播放"
+    priority: 20
+    enabled: true
+
+  - id: "adjust_volume"
+    intent: "adjust_volume"
+    command: "VOLUME_ADJUST"
+    session_mode: ["dialogue", "story", "music"]
+    description: "用户意图调整音量"
+    priority: 15
+    enabled: true
+
+  - id: "next_content"
+    intent: "next_content"
+    command: "NEXT_TRACK"
+    session_mode: ["music", "story"]
+    description: "用户意图跳过当前内容"
+    priority: 15
+    enabled: true
+
+  - id: "previous_content"
+    intent: "previous_content"
+    command: "PREV_TRACK"
+    session_mode: ["music", "story"]
+    description: "用户意图返回上一内容"
+    priority: 15
+    enabled: true
+
+  - id: "query_status"
+    intent: "query_status"
+    command: "QUERY_STATUS"
+    session_mode: ["dialogue", "story", "music"]
+    description: "用户查询设备状态"
+    priority: 5
+    enabled: true
+
+# ── 3. MQTT 十六进制指令 ──────────────────────────────────────────────────
+# 定义通过 MQTT 下发给设备侧的具体十六进制协议指令
+mqtt_commands:
+  - id: "status_query"
+    name: "状态查询"
+    hex: "55 AA AA AA AA 91 CF"
+    description: "查询设备当前运行状态"
+    type: "query"
+    enabled: true
+
+  - id: "all_on"
+    name: "全部打开"
+    hex: "55 AA AA AA AA 81 A4 01"
+    description: "四路全部打开"
+    type: "control"
+    enabled: true
+
+  - id: "all_off"
+    name: "全部关闭"
+    hex: "55 AA AA AA AA 81 A4 00"
+    description: "四路全部关闭"
+    type: "control"
+    enabled: true
+
+  - id: "ch1_on"
+    name: "一路打开"
+    hex: "55 AA AA AA AA 81 01 01"
+    description: "第一路开关打开"
+    type: "control"
+    enabled: true
+
+  - id: "ch1_off"
+    name: "一路关闭"
+    hex: "55 AA AA AA AA 81 01 00"
+    description: "第一路开关关闭"
+    type: "control"
+    enabled: true
+
+  - id: "ch2_on"
+    name: "二路打开"
+    hex: "55 AA AA AA AA 81 02 01"
+    description: "第二路开关打开"
+    type: "control"
+    enabled: true
+
+  - id: "ch2_off"
+    name: "二路关闭"
+    hex: "55 AA AA AA AA 81 02 00"
+    description: "第二路开关关闭"
+    type: "control"
+    enabled: true
+
+  - id: "ch3_on"
+    name: "三路打开"
+    hex: "55 AA AA AA AA 81 03 01"
+    description: "第三路开关打开"
+    type: "control"
+    enabled: true
+
+  - id: "ch3_off"
+    name: "三路关闭"
+    hex: "55 AA AA AA AA 81 03 00"
+    description: "第三路开关关闭"
+    type: "control"
+    enabled: true
+
+  - id: "ch4_on"
+    name: "四路打开"
+    hex: "55 AA AA AA AA 81 04 01"
+    description: "第四路开关打开"
+    type: "control"
+    enabled: true
+
+  - id: "ch4_off"
+    name: "四路关闭"
+    hex: "55 AA AA AA AA 81 04 00"
+    description: "第四路开关关闭"
+    type: "control"
+    enabled: true
+
+  - id: "ac_on"
+    name: "强电打开"
+    hex: "55 AA AA AA AA 84 AC 01"
+    description: "强电开关打开"
+    type: "control"
+    enabled: true
+
+  - id: "ac_off"
+    name: "强电关闭"
+    hex: "55 AA AA AA AA 84 AC 00"
+    description: "强电开关关闭"
+    type: "control"
+    enabled: true
+
+  - id: "swing_ch1"
+    name: "一路开关"
+    hex: "55 AA AA AA AA 81 BA 01"
+    description: "一路独立开关控制"
+    type: "control"
+    enabled: true
+
+  - id: "swing_ch2"
+    name: "二路开关"
+    hex: "55 AA AA AA AA 81 BA 02"
+    description: "二路独立开关控制"
+    type: "control"
+    enabled: true
+
+  - id: "swing_ch3"
+    name: "三路开关"
+    hex: "55 AA AA AA AA 81 BA 03"
+    description: "三路独立开关控制"
+    type: "control"
+    enabled: true
+
+  - id: "swing_ch4"
+    name: "四路开关"
+    hex: "55 AA AA AA AA 81 BA 04"
+    description: "四路独立开关控制"
+    type: "control"
+    enabled: true
+
+# ── 5. 指令匹配规则（原硬编码 _DIAGNOSTIC_RULES）─────────────────────────
+# 每条定义正则模式 → 意图 → 指令 → 适用模式的映射。
+# 由 CommandRuleEngine 在启动时加载，替代 server.py 里的硬编码列表。
+command_rules:
+  - id: "volume_up"
+    patterns:
+      - "大声一点|大点声|声音大一点|声音大些|音量.*大.*点|音量.*调大|调大.*音量|把.*音量.*调大|音量加一[格档]|音量.?\\+.?1|volume\\s*up|turn\\s*it\\s*up|louder|increase\\s*volume|加[大高].*音量"
+    intent: "VOLUME_UP"
+    command: "adjust_volume"
+    modes: ["dialogue", "unknown"]
+    enabled: true
+    description: "增大音量"
+
+  - id: "volume_down"
+    patterns:
+      - "小声一点|小点声|声音小一点|声音小些|音量.*小.*点|音量.*调小|调小.*音量|把.*音量.*调小|音量减一[格档]|音量.?-.?1|volume\\s*down|turn\\s*it\\s*down|quieter|decrease\\s*volume|减[小低].*音量"
+    intent: "VOLUME_DOWN"
+    command: "adjust_volume"
+    modes: ["dialogue", "unknown"]
+    enabled: true
+    description: "减小音量"
+
+  - id: "stop_playback"
+    patterns:
+      - "停止(?:播放)?|别播(?:放了)?|别说了|不要(?:再(?:讲|播放)|播放了|说了)|停下|够了|闭嘴|stop(\\s*(playing|it|this))?|shut\\s*up|enough|cancel"
+    intent: "PLAYBACK_STOP"
+    command: "stop_playback"
+    modes: ["dialogue", "unknown"]
+    enabled: true
+    description: "停止播放"
+
+  - id: "next_track"
+    patterns:
+      - "下一首|下一曲|next(\\s*track)?|skip(\\s*track)?|go\\s*next"
+    intent: "PLAYBACK_NEXT"
+    command: "next"
+    modes: ["dialogue"]
+    enabled: true
+    description: "下一首/曲"
+
+  - id: "prev_track"
+    patterns:
+      - "上一首|上一曲|previous(\\s*track)?|go\\s*back|back"
+    intent: "PLAYBACK_PREVIOUS"
+    command: "previous"
+    modes: ["dialogue"]
+    enabled: true
+    description: "上一首/曲"
+
+  - id: "pause"
+    patterns:
+      - "暂停(?:一下)?|停一下|先停(?:一下)?|pause|hold\\s*on|freeze|take\\s*a\\s*break"
+    intent: "PLAYBACK_PAUSE"
+    command: "pause"
+    modes: ["dialogue"]
+    enabled: true
+    description: "暂停播放"
+
+  - id: "resume"
+    patterns:
+      - "继续(?:播放|讲|唱|放)?|接着(?:播放|讲|唱|放|说)|恢复播放|go\\s*on|resume|continue(\\s*(playing|story|music|song))?"
+    intent: "PLAYBACK_RESUME"
+    command: "resume"
+    modes: ["dialogue"]
+    enabled: true
+    description: "恢复播放"
+
+# ── 4. 文本拦截过滤规则 ──────────────────────────────────────────────────
+# 用于 command_forwarded 事件中的文本清理和指令拦截逻辑
+command_filters:
+  - id: "strip_modal_particles"
+    pattern: "^(请|帮我|麻烦你)"
+    replacement: ""
+    description: "去除句首礼貌助词（请/帮我/麻烦你）"
+    enabled: true
+
+  - id: "strip_punctuation"
+    pattern: '[，。！？、；："''【】《》（）-]+$'
+    replacement: ""
+    description: "去除句末标点符号"
+    enabled: true
+
+  - id: "normalize_whitespace"
+    pattern: "\\s+"
+    replacement: " "
+    description: "合并多余空白字符"
+    enabled: true
