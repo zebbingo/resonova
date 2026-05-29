@@ -318,21 +318,21 @@ onUnmounted(() => {
               <circle cx="8" cy="8" r="6" fill="none" stroke="currentColor" stroke-width="1.2"/>
               <path d="M2 8h12M8 2v12" stroke="currentColor" stroke-width="1.2"/>
             </svg>
-            <span class="profile-label">{{ annotations[svc.id].profile.group_label }}</span>
-            <span class="profile-desc">{{ annotations[svc.id].profile.group_description }}</span>
+            <span class="profile-label">{{ annotations[svc.id]?.profile?.group_label }}</span>
+            <span class="profile-desc">{{ annotations[svc.id]?.profile?.group_description }}</span>
           </div>
           <div class="profile-options">
             <button
-              v-for="p in annotations[svc.id].profile.available"
+              v-for="p in annotations[svc.id]?.profile?.available ?? []"
               :key="p"
               class="profile-btn"
-              :class="{ active: annotations[svc.id].profile.active === p }"
+              :class="{ active: annotations[svc.id]?.profile?.active === p }"
               :disabled="profileBusy"
               @click="switchProfile(svc.id, p)"
-              :title="annotations[svc.id].profile.available_descriptions[p]"
+              :title="annotations[svc.id]?.profile?.available_descriptions?.[p]"
             >
-              <span class="profile-btn-label">{{ annotations[svc.id].profile.available_labels[p] }}</span>
-              <span class="profile-btn-desc">{{ annotations[svc.id].profile.available_descriptions[p].split('\n')[0] }}</span>
+              <span class="profile-btn-label">{{ annotations[svc.id]?.profile?.available_labels?.[p] }}</span>
+              <span class="profile-btn-desc">{{ annotations[svc.id]?.profile?.available_descriptions?.[p]?.split('\n')[0] }}</span>
             </button>
           </div>
         </div>
