@@ -18,6 +18,17 @@ env/
 .DS_Store
 Thumbs.db
 
+# .env 文件和本地配置
+.env
+.env.local
+.env.*.local
+
+# 设备配置产物
+backend/scripts/devices/
+backend/_check_path.py
+backend/_sync_wsl.py
+backend/conftest.py
+
 # Logs
 *.log
 

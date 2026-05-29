@@ -382,7 +382,7 @@ class ConnectedDevice:
         broker_tls_client_cert: Optional[str] = None,
         broker_tls_client_key: Optional[str] = None,
         broker_tls_insecure: bool = False,
-        subscribe_response: bool = False,
+        subscribe_response: bool = True,
         speed: float = 0,
         event_bus: Optional[SimulationEventBus] = None,
     ):
@@ -525,7 +525,7 @@ class ConnectedDevice:
         self._emit_device("device_state", {"state": "offline"})
         logger.info("Device %s powered off", self.device_id)
 
-    def simulate_from_wav(self, wav_path: Path, audio_id: str = "", speed: float = 0, subscribe_response: bool = False):
+    def simulate_from_wav(self, wav_path: Path, audio_id: str = "", speed: float = 0, subscribe_response: bool = True):
         if self._fw is not None:
             return self.run_session(wav_path=wav_path, audio_id=audio_id, speed=speed, subscribe_response=subscribe_response)
 
@@ -703,7 +703,7 @@ class ConnectedDevice:
             turn_id = self._fw.start_turn(pcm_data)
             result.total_chunks = max(1, (len(pcm_data) + 960 - 1) // 960)
 
-            response_ok = self._fw.wait_for_turn_response(turn_id=turn_id, timeout=90)
+            response_ok = self._fw.wait_for_turn_response(turn_id=turn_id, timeout=90, expect_downstream=True)
             logger.info("Turn %s response: %s", turn_id, "ok" if response_ok else "timeout")
 
             result.stt_text = "\n".join(self._fw.get_stt_texts())
@@ -713,6 +713,12 @@ class ConnectedDevice:
             for cmd in self._fw.get_all_commands():
                 if cmd.get("cmd"):
                     result.reply_text = cmd["cmd"]
+
+            # Collect downstream TTS tracking data
+            downstream = self._fw.get_downstream_stats()
+            result.tts_response_count = downstream["tts_response_count"]
+            result.tts_chunks = downstream["tts_chunks"]
+            result.tts_duration_ms = downstream["tts_duration_ms"]
 
             result.completed_at = time.time()
             result.send_duration_sec = round(result.completed_at - result.started_at, 2)
@@ -736,7 +742,7 @@ class ConnectedDevice:
         return result
 
     def run_session(self, wav_path: Path, audio_id: str = "",
-                    speed: float = 0, subscribe_response: bool = False) -> SimulationResult:
+                    speed: float = 0, subscribe_response: bool = True) -> SimulationResult:
         """Run a complete session (session → turn → response → session/end) on this device."""
         import numpy as np
 
@@ -821,6 +827,12 @@ class ConnectedDevice:
             for cmd in self._fw.get_all_commands():
                 if cmd.get("cmd"):
                     result.reply_text = cmd["cmd"]
+
+            # Collect downstream TTS tracking data
+            downstream = self._fw.get_downstream_stats()
+            result.tts_response_count = downstream["tts_response_count"]
+            result.tts_chunks = downstream["tts_chunks"]
+            result.tts_duration_ms = downstream["tts_duration_ms"]
 
             self._fw.stop_session(reason="user_stop")
 
@@ -1241,7 +1253,7 @@ class SimulationManager:
         audio_id: str,
         resolve_audio: Callable[[str], Path | None],
         speed: float = 0,
-        subscribe_response: bool = False,
+        subscribe_response: bool = True,
     ) -> str:
         """Run a simulation session on an already-connected device."""
         with self._lock:
@@ -1444,7 +1456,7 @@ class SimulationManager:
         audio_id: str,
         resolve_audio: Callable[[str], Path | None],
         nfc_id: str = "sim-nfc",
-        subscribe_response: bool = False,
+        subscribe_response: bool = True,
         speed: float = 0,
         mqtt_profile: str | None = None,
         mqtt_env: str | None = None,

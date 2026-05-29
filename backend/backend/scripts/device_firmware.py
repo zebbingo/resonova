@@ -520,6 +520,26 @@ class DeviceFirmware:
         with self._lock:
             return list(self._session_stt_texts)
 
+    def get_downstream_stats(self) -> dict:
+        """Aggregate downstream TTS statistics across all active turns.
+
+        Returns dict with tts_response_count (number of downstream audio/start
+        received), tts_chunks (total downstream audio chunks), and
+        tts_duration_ms (placeholder, currently 0).
+        """
+        total_responses = 0
+        total_chunks = 0
+        with self._lock:
+            for tid, tracker in self._active_turns.items():
+                if tracker.downstream_started:
+                    total_responses += 1
+                    total_chunks += tracker.chunks_received
+        return {
+            "tts_response_count": total_responses,
+            "tts_chunks": total_chunks,
+            "tts_duration_ms": 0,
+        }
+
     def _flush_after_audio_commands(self, turn_id: str):
         cmds = self._pending_after_audio.pop(turn_id, [])
         for cmd in cmds:

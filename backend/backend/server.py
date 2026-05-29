@@ -1031,7 +1031,7 @@ class SimulateRequest(BaseModel):
     mode: str = "dialogue"           # "dialogue" | "story" | "music"
     audio_id: str = ""               # 要模拟的音频 ID
     nfc_id: str = "sim-nfc"          # 模拟 NFC 标签 ID
-    subscribe_response: bool = False  # 是否订阅服务端下行响应
+    subscribe_response: bool = True   # 是否订阅服务端下行响应（默认开启全链路等待）
     speed: float = 0                  # 0=最快, 1.0=实时
     mqtt_profile: str | None = None
     mqtt_env: str | None = None
@@ -1225,9 +1225,13 @@ def _resolve_audio_for_sim(audio_id: str) -> Path | None:
 
     parts = audio_id.split("/", 1)
     if len(parts) != 2:
-        return None
-
-    prefix, name = parts
+        # 兼容裸数字 ID：当作 tts/{id}
+        if audio_id.isdigit():
+            prefix, name = "tts", audio_id
+        else:
+            return None
+    else:
+        prefix, name = parts
 
     # TTS 生成音频：tts/{db_id} → 从数据库查本地路径
     if prefix == "tts":
