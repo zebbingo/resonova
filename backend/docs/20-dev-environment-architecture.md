@@ -237,6 +237,7 @@ WSL /home/.../projects/             Windows D:\zebbingo\projects\
 | `git rm` 辅助文件 | 3 | `stt-test-tool.cleanup-bak.20260529/backend/` |
 | 删除 frontend/backend/ 重复 .py | 7 | `stt-test-tool.cleanup-bak.20260529/frontend-backend.tar` |
 | 删除 frontend/backend/.venv | 229MB | 已删除不备份（可从 dep 重建） |
+| 删除 frontend/backend/ 剩余重复文件 | 15 项（md/json/缓存/egg-info） | `stt-test-tool.cleanup-bak.20260529/frontend-backend-2/` |
 | 删除 root 空 .venv | 0 字节 | 无备份 |
 | 追踪有用工具脚本 | 5 个新增 | 新增至 git |
 
