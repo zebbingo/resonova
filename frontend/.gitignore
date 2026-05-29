@@ -16,6 +16,9 @@ backend/*.txt
 backend/test_vc_result.txt
 backend/voice_chain_integration_test.py
 
+# 后端代码（前端项目不需要，真正的后端在 stt-test-tool/）
+backend/
+
 # .env 文件和本地配置
 .env
 .env.local
