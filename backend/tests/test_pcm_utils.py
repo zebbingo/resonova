@@ -84,6 +84,32 @@ class TestPcmConvert:
         assert result.dtype == np.int16
         assert np.array_equal(result, orig)
 
+    def test_to_int16_safe_int32_clips(self):
+        """int32 超出 int16 范围的值应被 clip 而非回绕"""
+        orig = np.array([-100000, 0, 200, 50000, 32768], dtype=np.int32)
+        result = to_int16_safe(orig)
+        assert result.dtype == np.int16
+        assert result[0] == PCM_MIN_INT16  # -100000 → -32768
+        assert result[2] == 200            # 200 → 200 (in range)
+        assert result[3] == PCM_MAX_INT16  # 50000 → 32767
+        assert result[4] == PCM_MAX_INT16  # 32768 → 32767
+
+    def test_to_int16_safe_uint16_clips(self):
+        """uint16 > 32767 应 clip 而非回绕"""
+        orig = np.array([0, 32767, 32768, 65535], dtype=np.uint16)
+        result = to_int16_safe(orig)
+        assert result.dtype == np.int16
+        assert result[0] == 0
+        assert result[1] == 32767
+        assert result[2] == 32767  # 32768 → clip to 32767
+        assert result[3] == 32767  # 65535 → clip to 32767
+
+    def test_to_int16_safe_empty(self):
+        """空数组应正常返回"""
+        result = to_int16_safe(np.array([], dtype=np.float32))
+        assert result.dtype == np.int16
+        assert len(result) == 0
+
     # ── 硬断言 2: Round-trip 精度 ≤ 1/32768 ─────────────────────
 
     def test_roundtrip_precision(self):

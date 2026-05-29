@@ -62,8 +62,8 @@ def _make_wav(tmp_path: Path, duration_sec: float = 1.0, sr: int = 16000) -> Pat
     import pcm_utils
 
     samples = int(sr * duration_sec)
-    # Generate int16 tone directly; this is not a float32->int16 conversion.
-    tone = (np.sin(2 * np.pi * 440 * np.arange(samples) / sr) * 0.3 * 32767).astype(
+    # Generate int16 tone directly using PCM_MAX_INT16 constant.
+    tone = (np.sin(2 * np.pi * 440 * np.arange(samples) / sr) * 0.3 * pcm_utils.PCM_MAX_INT16).astype(
         np.int16
     )
     wav = tmp_path / "test_tone.wav"

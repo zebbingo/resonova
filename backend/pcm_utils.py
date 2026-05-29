@@ -37,9 +37,10 @@ def int16_to_float32(x) -> np.ndarray:
     """int16[-32768, 32767] → float32[-1.0, 1.0]
 
     规范依据: x.astype(np.float32) / 32768.0
-    接受 numpy ndarray、list 或 Python int 标量。
+    接受 numpy ndarray、list 或 Python int/float 标量。
+    不强制输入为 int16 —— 如果输入已经是 float32，等价位浮点转换。
     """
-    return np.asarray(x, dtype=np.int16).astype(np.float32) / PCM_SCALE_FACTOR
+    return np.asarray(x).astype(np.float32) / PCM_SCALE_FACTOR
 
 
 def float32_to_int16(x) -> np.ndarray:
@@ -52,17 +53,21 @@ def float32_to_int16(x) -> np.ndarray:
 
 
 def to_int16_safe(x) -> np.ndarray:
-    """Dtype-aware: 安全地将 float32/float64/int16 统一转为 int16
+    """Dtype-aware: 安全地将 float32/float64/int16/uint16/int32 统一转为 int16
 
     等效于旧版 start_turn() 中的 dtype-aware 逻辑：
       - float32/float64: 按规范 *32768 + clip 转换
-      - int16/其他整型: 类型保证后直接使用
+      - int16/uint8/int8: 类型安全直接转换
+      - int32/uint16/int64/int8/uint8: clip 至 int16 范围后转换（防止回绕）
       - Python 标量 / list / ndarray: 先规范化为 ndarray 再处理
     """
     arr = np.asarray(x)
     if arr.dtype in (np.float32, np.float64):
         return float32_to_int16(arr)
-    return arr.astype(np.int16)
+    if arr.dtype in (np.int16, np.uint8, np.int8):
+        return arr.astype(np.int16)
+    # int32 / uint16 / int64 等宽类型：clip 至 int16 范围防止回绕截断
+    return arr.clip(PCM_MIN_INT16, PCM_MAX_INT16).astype(np.int16)
 
 
 def encode_opus(pcm_int16: np.ndarray, frame_size: int = OPUS_FRAME_SAMPLES) -> bytes:
