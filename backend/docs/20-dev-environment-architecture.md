@@ -1,6 +1,6 @@
 # 开发环境架构 — 前后端分离与跨平台协作
 
-> 文档编号: 20 | 版本: v1.0 | 日期: 2026-05-29
+> 文档编号: 20 | 版本: v1.1 | 日期: 2026-05-29
 
 本文档描述 VoicePipe 测试平台（stt-test-tool）的开发环境架构，重点说明前后端如何跨 Windows 和 WSL 协作。
 
@@ -201,3 +201,73 @@ WSL /home/.../projects/             Windows D:\zebbingo\projects\
 ├── chatbot/          ← REAL       ├── stt-test-tool/          ← git (master)
 ├── stt-test-tool/    ← SYMLINK    ├── stt-test-tool-frontend/ ← git (main), pnpm
 └── .bak.*/           ← 备份       ├── chatbot → SYMLINK to WSL
+
+---
+
+## 8. 后端清理记录
+
+### 8.1 问题：代码冗余和 git 混乱
+
+测试平台前后端分离过程中，后端代码产生了多处副本和 git 追踪垃圾：
+
+| 问题 | 数量 |
+|------|------|
+| 设备身份 JSON 被 git 追踪 | 71 个自动生成文件 |
+| 遗留脚本（chatbot 有副本） | 7 个 |
+| 过时辅助文件 | 3 个 |
+| frontend/backend/ 重复后端代码 | 7 个 .py + 229MB .venv |
+| root 级别空 .venv | 1 个（0 字节） |
+
+### 8.2 差异分析方式
+
+每个待清理文件都做了内容级对比：
+
+1. **对比 `stt-test-tool/backend/scripts/` vs `chatbot/scripts/`** — 确认 6 个脚本完全一致（chatbot 有副本）
+2. **对比 `stt-test-tool/backend/` vs `stt-test-tool-frontend/backend/`** — 确认内容完全一致（diff 为 IDENTICAL）
+3. **检查 `db/migrations/` 归属** — 确认是测试平台独有，非 chatbot 副本
+4. **检查 71 个 JSON 内容** — 确认都是 5 行自动生成，无手工数据
+5. **回溯 git 历史** — 确认哪些文件已被旧 commit 追踪
+
+### 8.3 处理清单
+
+| 操作 | 数量 | 备份位置 |
+|------|------|---------|
+| `git rm --cached` 设备 JSON | 71 | 磁盘保留，git 不再追踪 |
+| `git rm` 遗留脚本 | 7 | `stt-test-tool.cleanup-bak.20260529/scripts/` |
+| `git rm` 辅助文件 | 3 | `stt-test-tool.cleanup-bak.20260529/backend/` |
+| 删除 frontend/backend/ 重复 .py | 7 | `stt-test-tool.cleanup-bak.20260529/frontend-backend.tar` |
+| 删除 frontend/backend/.venv | 229MB | 已删除不备份（可从 dep 重建） |
+| 删除 root 空 .venv | 0 字节 | 无备份 |
+| 追踪有用工具脚本 | 5 个新增 | 新增至 git |
+
+### 8.4 保留清单（未动）
+
+| 文件 | 原因 |
+|------|------|
+| `_check_mysql.py` | 测试平台独有 MySQL 诊断工具 |
+| `verify_aws_iot.py` | 测试平台独有 AWS IoT 验证工具 |
+| `db/migrations/` | 测试平台自己的数据库迁移（2 个 SQL） |
+| `grant_*.sql`、`grant_remote.sh` | 数据库授权脚本 |
+| `run_migration.py`、`run_figurine_audio_migration.py` | 迁移执行器 |
+| `backend/.venv` | 正在使用（168MB） |
+
+### 8.5 清理后状态
+
+```
+git tracked: 65 files (从 132 减少)
+git dirty:  0 files
+remote:     origin/master (已推送)
+backup:     /home/administrator/projects/stt-test-tool.cleanup-bak.20260529/
+```
+
+### 8.6 项目历史提交记录
+
+```
+29fdab2  chore: track check_logs.sh utility
+3750b4b  chore: track useful scripts, remove empty root .venv
+7ad3c1c  cleanup: remove legacy scripts, device JSONs, duplicate backend
+0231a0c  docs: add dev environment architecture (doc 20)
+56e3f82  docs: add architecture docs + service management documentation
+da682ce  fix: MQTT device simulation improvements
+b72b85e  feat: env scanner + service management API
+```
