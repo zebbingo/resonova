@@ -1471,6 +1471,7 @@ class SimulationManager:
         with self._lock:
             self._results.clear()
             self._session_aliases.clear()
+            self._vad_bypassed.clear()
         self._flush_history()
 
     def _flush_history(self):
