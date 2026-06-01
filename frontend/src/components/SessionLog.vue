@@ -5,7 +5,6 @@ defineProps<{
   logs: MQTTMessageLog[]
 }>()
 
-/** 格式化时间 */
 function formatTime(date: Date): string {
   const h = String(date.getHours()).padStart(2, '0')
   const m = String(date.getMinutes()).padStart(2, '0')
@@ -14,42 +13,48 @@ function formatTime(date: Date): string {
   return `${h}:${m}:${s}.${ms}`
 }
 
-/** 获取消息类型标签 */
 function getTypeLabel(type: MQTTMessageLog['type']): string {
+  if (type === 'session_status') return 'STATUS'
+  if (type === 'intro_start' || type === 'intro_end') return 'INTRO'
+  if (type === 'stt_inference' || type === 'stt_result') return 'STT'
+  if (type === 'llm_inference') return 'LLM'
+  if (type === 'tts_synthesis') return 'TTS'
+  if (type === 'vad_speech_started' || type === 'vad_speech_stopped') return 'VAD'
+  if (type === 'command') return 'CMD'
+  if (type === 'command_preempt') return 'CMD'
+  if (type === 'mqtt_publish') return 'MQTT'
+
   const labels: Partial<Record<MQTTMessageLog['type'], string>> = {
-    session_start: '📡 SESSION',
-    audio_start: '🎵 AUDIO',
-    chunk: '📦 CHUNK',
-    eos: '⏹️ EOS',
-    session_end: '🔚 END',
-    stt_result: '✨ STT',
-    other: 'ℹ️ INFO',
+    session_start: 'SESSION',
+    audio_start: 'AUDIO',
+    chunk: 'CHUNK',
+    eos: 'EOS',
+    session_end: 'END',
+    other: 'INFO',
   }
-  return labels[type] || 'ℹ️'
+  return labels[type] || 'INFO'
 }
 
-/** 获取方向图标 */
 function getDirectionIcon(direction: 'up' | 'down'): string {
-  return direction === 'up' ? '↑' : '↓'
+  return direction === 'up' ? 'UP' : 'DOWN'
 }
 
-/** 截断 payload 显示 */
 function truncatePayload(payload: any): string {
   if (!payload) return ''
   const str = typeof payload === 'string' ? payload : JSON.stringify(payload)
-  return str.length > 100 ? str.substring(0, 100) + '...' : str
+  return str.length > 120 ? `${str.slice(0, 120)}...` : str
 }
 </script>
 
 <template>
   <div class="session-log">
     <div class="log-header">
-      <h3>📋 会话日志</h3>
-      <span class="log-count">{{ logs.length }} 条消息</span>
+      <h3>Session Log</h3>
+      <span class="log-count">{{ logs.length }} messages</span>
     </div>
 
     <div v-if="logs.length === 0" class="empty-log">
-      暂无日志，启动设备后将显示 MQTT 消息流
+      No logs yet. Start the device to see MQTT messages.
     </div>
 
     <div v-else class="log-list">
@@ -62,7 +67,7 @@ function truncatePayload(payload: any): string {
         <div class="log-time">
           {{ formatTime(log.timestamp) }}
         </div>
-        
+
         <div class="log-direction">
           {{ getDirectionIcon(log.direction) }}
         </div>
@@ -147,17 +152,14 @@ function truncatePayload(payload: any): string {
   background: #2a2e3f;
 }
 
-/* 上行消息 - 蓝色 */
 .log-item.up {
   border-left-color: var(--accent);
 }
 
-/* 下行消息 - 绿色 */
 .log-item.down {
   border-left-color: var(--green);
 }
 
-/* STT 结果高亮 */
 .log-item.stt_result {
   border-left-color: var(--orange);
   background: #2a2520;
@@ -201,7 +203,6 @@ function truncatePayload(payload: any): string {
   word-break: break-all;
 }
 
-/* 滚动条样式 */
 .log-list::-webkit-scrollbar {
   width: 6px;
 }

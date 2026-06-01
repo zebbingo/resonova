@@ -216,6 +216,8 @@ onBeforeUnmount(() => {
 const showDeviceInfo = ref(false)
 const showTurnDetail = ref<string | null>(null)
 const copiedSttIdx = ref<number | null>(null)
+const isSendingTurn = ref(false)
+const pendingSendTurnStepId = ref<string | null>(null)
 
 const contextMenu = ref<{ x: number; y: number; visible: boolean }>({ x: 0, y: 0, visible: false })
 
@@ -247,6 +249,41 @@ const latestIntroStatus = computed(() => {
 })
 
 const canSendTurn = computed(() => !!getCurrentAudioId() && !!state.sessionId && (isConnected.value || isSimulating.value))
+
+const liveFeedback = computed(() => {
+  const stamp = state.lastEventAt
+    ? new Intl.DateTimeFormat('zh-CN', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).format(state.lastEventAt)
+    : ''
+
+  const parts = [state.lastEventSummary || (state.status === 'error' ? state.errorMessage || '流程异常' : '等待流程更新')]
+  if (state.lastSessionStatus) parts.push(`阶段: ${state.lastSessionStatus}`)
+  if (state.lastSttText) parts.push(`STT: ${state.lastSttText}`)
+  if (state.lastReplyText) parts.push(`回复: ${state.lastReplyText}`)
+  if (stamp) parts.push(`更新时间: ${stamp}`)
+  return parts
+})
+
+watch(
+  () => state.lastSessionStatus,
+  (nextStatus) => {
+    if (!isSendingTurn.value || !pendingSendTurnStepId.value) return
+    if (nextStatus === 'turn_completed' || nextStatus === 'completed' || nextStatus === 'session_closed' || nextStatus === 'error') {
+      const stepId = pendingSendTurnStepId.value
+      pendingSendTurnStepId.value = null
+      isSendingTurn.value = false
+      if (nextStatus === 'error') {
+        failStep('session', stepId, state.errorMessage || '发送失败')
+      } else {
+        completeStep('session', stepId, state.lastEventSummary || '已收到回复')
+      }
+    }
+  },
+)
 
 interface FigurineWithMediaCount extends FigurineConfig {
   story_count?: number
@@ -523,6 +560,40 @@ async function handleSendTurn() {
     }
   } catch (err: any) {
     failStep('session', '手动发送一轮', err.message || '发送失败')
+  }
+}
+
+async function handleSendTurnWithFeedback() {
+  const audioId = getCurrentAudioId()
+  if (!audioId) {
+    alert('璇峰厛閫夋嫨闊抽')
+    return
+  }
+  if (!state.sessionId) {
+    alert('璇峰厛绛夊緟浼氳瘽寤虹珛瀹屾垚')
+    return
+  }
+
+  const phase = flowStore.phases.find(p => p.id === 'session')
+  if (phase) phase.expanded = true
+
+  const stepId = addStep('session', '鎵嬪姩鍙戦€佷竴杞?, `audio_id: ${audioId} · 绛夊緟绯荤粺鍥炲`)
+  pendingSendTurnStepId.value = stepId || null
+  isSendingTurn.value = true
+  state.lastEventSummary = '请求已发出，等待设备回复'
+  state.lastEventAt = new Date()
+  state.lastSessionStatus = 'turn_sent'
+
+  try {
+    const resp = await sendTurn(audioId)
+    const nextSessionId = resp?.session_id || state.sessionId
+    if (nextSessionId && !state.sessionId) {
+      state.sessionId = nextSessionId
+    }
+  } catch (err: any) {
+    isSendingTurn.value = false
+    pendingSendTurnStepId.value = null
+    failStep('session', stepId || '鎵嬪姩鍙戦€佷竴杞?', err.message || '鍙戦€佸け璐?')
   }
 }
 
@@ -844,6 +915,22 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
     </div>
 
     <!-- 角色选择 -->
+    <div v-if="(isSimulating || isConnected) && (state.lastEventSummary || state.lastSessionStatus || state.lastSttText || state.lastReplyText)" class="live-feedback">
+      <div class="live-feedback-head">
+        <span class="live-feedback-title">实时反馈</span>
+        <span class="live-feedback-badge" :class="state.status">{{ state.status }}</span>
+      </div>
+      <div class="live-feedback-main">{{ liveFeedback[0] }}</div>
+      <div v-if="state.lastSttText" class="live-feedback-line">
+        <span class="live-feedback-label">STT</span>
+        <span class="mono">{{ state.lastSttText }}</span>
+      </div>
+      <div v-if="state.lastReplyText" class="live-feedback-line">
+        <span class="live-feedback-label">回复</span>
+        <span class="mono">{{ state.lastReplyText }}</span>
+      </div>
+    </div>
+
     <div class="config-section">
       <label>🎭 角色 (Figurine)</label>
       <div v-if="loadingFigurines" class="loading" style="padding:8px">加载角色列表中...</div>
@@ -1087,12 +1174,12 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
       </template>
       <template v-else-if="isConnected && !isSimulating">
         <button class="btn-start" :disabled="!getCurrentAudioId()" @click="handleStart">▶ Start</button>
-        <button class="btn-send-turn" :disabled="!canSendTurn" @click="handleSendTurn">📣 Send Turn</button>
+        <button class="btn-send-turn" :disabled="!canSendTurn || isSendingTurn" @click="handleSendTurnWithFeedback">{{ isSendingTurn ? '⏳ 等待回复...' : '📣 Send Turn' }}</button>
         <button class="btn-disconnect" @click="handleDisconnect">🔲 断开设备</button>
       </template>
       <template v-else-if="isSimulating">
         <button class="btn-stop" @click="handleStop">🔶 停止模拟</button>
-        <button class="btn-send-turn" :disabled="!canSendTurn" @click="handleSendTurn">📣 Send Turn</button>
+        <button class="btn-send-turn" :disabled="!canSendTurn || isSendingTurn" @click="handleSendTurnWithFeedback">{{ isSendingTurn ? '⏳ 等待回复...' : '📣 Send Turn' }}</button>
       </template>
     </div>
 
@@ -1257,6 +1344,67 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
   border-radius: 8px;
   padding: 10px 14px;
   margin-bottom: 12px;
+}
+
+.live-feedback {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.18), rgba(15, 23, 42, 0.8));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+.live-feedback-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.live-feedback-title {
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #fde68a;
+}
+
+.live-feedback-badge {
+  font-size: 0.72rem;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text2);
+  text-transform: uppercase;
+}
+
+.live-feedback-badge.error {
+  color: #fecaca;
+  background: rgba(239, 68, 68, 0.18);
+}
+
+.live-feedback-main {
+  font-size: 0.92rem;
+  color: var(--text);
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
+.live-feedback-line {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin-top: 4px;
+  color: var(--text2);
+  font-size: 0.8rem;
+}
+
+.live-feedback-label {
+  min-width: 42px;
+  color: #fbbf24;
+  font-weight: 600;
 }
 
 .info-row {
