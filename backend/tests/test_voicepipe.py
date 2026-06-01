@@ -520,7 +520,7 @@ class TestSimulationManager:
         captured = {}
 
         class FakeDevice:
-            def __init__(self, *, device_id, figurine_id, mode, nfc_id, broker_profile, env, broker_host, broker_port, broker_tls, event_bus):
+            def __init__(self, *, device_id, figurine_id, mode, nfc_id, broker_profile, env, broker_host, broker_port, broker_tls, broker_tls_ca_cert=None, broker_tls_client_cert=None, broker_tls_client_key=None, broker_tls_insecure=False, event_bus):
                 captured.update(
                     {
                         "device_id": device_id,
@@ -583,7 +583,7 @@ class TestSimulationManager:
         captured = {}
 
         class FakeDevice:
-            def __init__(self, *, device_id, figurine_id, mode, nfc_id, broker_profile, env, broker_host, broker_port, broker_tls, event_bus):
+            def __init__(self, *, device_id, figurine_id, mode, nfc_id, broker_profile, env, broker_host, broker_port, broker_tls, broker_tls_ca_cert=None, broker_tls_client_cert=None, broker_tls_client_key=None, broker_tls_insecure=False, event_bus):
                 captured.update(
                     {
                         "device_id": device_id,
@@ -643,7 +643,7 @@ class TestSimulationManager:
         import mqtt_bridge
 
         class FakeDevice:
-            def __init__(self, *, device_id, figurine_id, mode, nfc_id, broker_profile, env, broker_host, broker_port, broker_tls, event_bus):
+            def __init__(self, *, device_id, figurine_id, mode, nfc_id, broker_profile, env, broker_host, broker_port, broker_tls, broker_tls_ca_cert=None, broker_tls_client_cert=None, broker_tls_client_key=None, broker_tls_insecure=False, event_bus=None):
                 self.device_id = device_id
                 self.figurine_id = figurine_id
                 self.mode = mode
@@ -719,6 +719,10 @@ class TestSimulationManager:
                 self.broker_host = "localhost"
                 self.broker_port = 1883
                 self.broker_tls = False
+                self.broker_tls_ca_cert = None
+                self.broker_tls_client_cert = None
+                self.broker_tls_client_key = None
+                self.broker_tls_insecure = False
                 self.is_connected = True
                 self.is_simulating = True
 
