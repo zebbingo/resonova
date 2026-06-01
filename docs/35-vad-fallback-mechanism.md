@@ -154,8 +154,71 @@ curl -s http://localhost:8765/api/device/history?limit=1 | jq
 | 无自动重试 | 若第一次模拟 `vad_blocked=true`，不会自动重试 EOS 模式 |
 | 前端集成待完成 | 前端 `vad_blocked` 字段已就绪，UI 提示逻辑待实现 |
 
+## 多 AI 协作注意事项
+
+> 当前项目由多个 AI 代理并行协作开发。VAD Fallback 的追踪层需要考虑以下场景：
+
+### 1. `_vad_bypassed` 写入无锁保护
+
+```python
+# server.py — start_device_simulation()
+if req.bypass_vad:
+    simulation_manager._vad_bypassed[session_id] = True  # ⚠️ 无锁访问
+```
+
+**问题**：多 AI 同时调用 simulate 时，dict 写入不在 `manager._lock` 保护范围内，
+理论上存在竞态条件。虽 Python dict 的 key 赋值是原子的，但不保证跨线程可见性。
+
+**规避**：当前写入与 `start_simulation()` 调用在同一线程（FastAPI 请求处理线程），
+且 `start_simulation()` 在内部使用 `self._lock` 保护状态变更，故实际风险极低。
+后续如需严格保护，可将写入移至 `start_simulation()` 内部。
+
+### 2. `_vad_bypassed` 不持久化
+
+```python
+# 服务重启后
+simulation_manager._vad_bypassed = {}  # 清空
+```
+
+**问题**：`_vad_bypassed` 仅存内存，不写入 `simulation_history.json`。
+服务器重启后，历史记录的 `vad_bypassed` 标记全部丢失。
+
+**影响**：低。因为 `vad_blocked` 在 history 端点是实时计算的，即便 `vad_bypassed` 丢失，
+`vad_blocked` 也能根据 `stt_text` + `tts_response_count` 重新推导。
+
+### 3. `clear_history()` 未清理 `_vad_bypassed`（已修复 `cd71be4`）
+
+⚠️ 这是已发现的 bug — `clear_history()` 虽然清空了 `_results`，
+但没有清空 `_vad_bypassed`，导致残留的 session_id 仍返回 True。
+
+**修复**：`commit cd71be4` 在 `clear_history()` 中追加 `self._vad_bypassed.clear()`。
+
+### 4. 多 AI 绕过策略覆盖
+
+当 AI-A 以 `bypass_vad=false` 发起模拟（session A），
+AI-B 以 `bypass_vad=true` 发起模拟（session B）时，
+各自的 `_vad_bypassed` 记录互不干扰（以 session_id 为 key）。
+
+**但若使用相同 session_id 重试**，后一个会覆盖前一个的 `vad_bypassed` 标记。
+这是预期行为 — 最终结果反映的是最近一次运行的实际配置。
+
+### 5. 线程安全性
+
+| 访问路径 | 锁保护 | 风险 |
+|----------|--------|------|
+| `server.py` 写入 `_vad_bypassed` | ❌ 无 | 极低，dict key 赋值原子，同线程 |
+| `get_result()` 读取 `_vad_bypassed` | ✅ `self._lock` | 无 |
+| `get_history()` 读取 `_vad_bypassed` | ❌ 锁外 | 低，锁在 `all_results` 排序时已释放，后续只读 |
+| `clear_history()` 清空 `_vad_bypassed` | ✅ `self._lock` | 无 |
+
+---
+
+## 后续路线
+
 如需完全自动化，后续可：
 
 1. 在 `start_device_simulation()` 中检测 `vad_blocked` 条件
 2. 自动调用 profile 切换 API 重启 chatbot
 3. 重试模拟
+4. 将 `_vad_bypassed` 持久化到 `simulation_history.json`
+5. 在 `cleanup_orphan_sessions()` 中同步清理 `_vad_bypassed`
