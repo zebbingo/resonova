@@ -13,6 +13,11 @@ resonova/
 
 ## Quick Start
 
+### Fastest Start (Windows PowerShell)
+```powershell
+powershell -ExecutionPolicy Bypass -File ..\..\scripts\start-resonava.ps1 start
+```
+
 ### Backend (WSL)
 ```bash
 cd backend
@@ -22,10 +27,10 @@ uv run uvicorn server:app --host 0.0.0.0 --port 8765
 ### Frontend (Windows)
 ```bash
 cd frontend
-pnpm dev
+npm run dev
 ```
 
-Frontend auto-proxies `/api` and `/ws` to http://192.168.52.134:8765.
+Frontend auto-proxies `/api` and `/ws` to http://127.0.0.1:8765.
 
 ## Docs
 

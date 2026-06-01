@@ -1,6 +1,9 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
+const backendHttp = process.env.VITE_BACKEND_HTTP_URL || 'http://127.0.0.1:8765'
+const backendWs = process.env.VITE_BACKEND_WS_URL || 'ws://127.0.0.1:8765'
+
 export default defineConfig({
   plugins: [vue()],
   server: {
@@ -11,11 +14,11 @@ export default defineConfig({
     },
     proxy: {
       '/api': {
-        target: 'http://192.168.52.134:8765',
+        target: backendHttp,
         changeOrigin: true,
       },
       '/ws': {
-        target: 'ws://192.168.52.134:8765',
+        target: backendWs,
         ws: true,
       },
     },
