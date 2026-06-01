@@ -1,6 +1,6 @@
 # 全链路模拟测试报告
 
-> 日期: 2026-05-29 | 测试脚本: `backend/scripts/full_link_test.py` | 测试平台: stt-test-tool (port 8765)
+> 日期: 2026-05-29 | 测试脚本: `backend/scripts/full_link_test.py` | Resonova: resonova (port 8765)
 
 ---
 

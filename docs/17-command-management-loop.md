@@ -1,6 +1,6 @@
 # 指令管理闭环
 
-这份说明记录测试平台里“指令管理”和“指令拦截监控”如何构成一条闭环链路。
+这份说明记录Resonova里“指令管理”和“指令拦截监控”如何构成一条闭环链路。
 
 核心思想不是单纯做一个指令列表页面，而是把以下几层串起来：
 
@@ -22,7 +22,7 @@
 
 ```mermaid
 flowchart LR
-  subgraph UI["测试平台前端 http://localhost:8765"]
+  subgraph UI["Resonova前端 http://localhost:8765"]
     CM["指令管理<br/>CommandManager"]
     MON["指令拦截监控<br/>CommandMonitor"]
     SIM["模拟器 / 设备面板"]
@@ -115,7 +115,7 @@ flowchart LR
 
 其中：
 
-- `/api/commands` 管理测试平台本地的 `commands.yaml`
+- `/api/commands` 管理Resonova本地的 `commands.yaml`
 - `/api/command-config/chatbot` 直接桥接 chatbot 的 `voice_commands.yaml`
 
 ### 4. 运行时
@@ -139,14 +139,14 @@ chatbot 运行时从 YAML 读取规则，供：
 
 ## 当前约束
 
-- 测试平台本地 `commands.yaml` 仍然是平台自己的 source of truth
+- Resonova本地 `commands.yaml` 仍然是平台自己的 source of truth
 - chatbot 的 `voice_commands.yaml` 是另一条可外部管理的源
 - 两者通过 `/api/command-config/chatbot` 这条桥接接口连接
 - 运行时仍然依赖 YAML 文件，重启后重新读取
 
 ## 与 chatbot 项目的关系
 
-`stt-test-tool` 和 `projects/chatbot` 是独立仓库，但通过以下几个点保持联动：
+`resonova` 和 `projects/chatbot` 是独立仓库，但通过以下几个点保持联动：
 
 - MQTT 协议
 - 配置 YAML

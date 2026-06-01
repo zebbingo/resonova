@@ -57,7 +57,7 @@ pcm_utils.assert_wav_consistent(data, sr=16000)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│  stt-test-tool (模拟设备端)                                      │
+│  resonova (模拟设备端)                                      │
 │                                                                  │
 │  Process 1: server.py (Uvicorn :8765)                           │
 │    - HTTP API（角色列表、音频列表）                                │
@@ -118,9 +118,9 @@ MQTT broker → bot_mqtt.MQTTInputTransport
 ### 启动命令速查
 
 ```bash
-# WSL — Process 1：stt-test-tool 后端
+# WSL — Process 1：resonova 后端
 export PYTHONPATH="/home/administrator/chatbot-test/.venv/lib/python3.13/site-packages"
-cd /home/administrator/projects/stt-test-tool/backend
+cd /home/administrator/projects/resonova/backend
 nohup .venv/bin/python server.py &
 
 # WSL — Process 2：bot_runner（设备管理 + HTTP）
@@ -132,7 +132,7 @@ cd /home/administrator/projects/chatbot
 PYTHONPATH="/home/administrator/projects/chatbot/src" ZEBBIE_STUDIO_API_KEY="app-tfUY8CMnMpSlSeyuSN7kCz6b" nohup .venv/bin/python -m src.bot_mqtt &
 
 # Windows — 前端
-cd d:\zebbingo\projects\stt-test-tool-frontend
+cd d:\zebbingo\projects\resonova\frontend
 nohup .\node_modules\.bin\vite --host
 ```
 
@@ -206,5 +206,5 @@ nohup .\node_modules\.bin\vite --host
 ### 7.4 已知约束
 
 - **角色 Studio 配置缺失无报警流程**：新增 figurine 后需手动补 `ZebFigurineInfo.StudioApiKey`，否则降级到 `ZEBBIE_STUDIO_API_KEY` 环境变量。建议以后在 admin 页面加校验。
-- **chatbot .venv 损坏后恢复**：35f9e79 后 `chatbot/.venv/lib/` 丢失。stt-test-tool 需引入 chatbot-test 或其他完整 venv 的 site-packages。
+- **chatbot .venv 损坏后恢复**：35f9e79 后 `chatbot/.venv/lib/` 丢失。resonova 需引入 chatbot-test 或其他完整 venv 的 site-packages。
 - **shared subscription 依赖**：`bot_mqtt` 使用 `$share/sess-intake/` 共享订阅，确保 NanoMQ 配置允许共享订阅（⚠️ Mosquitto 已弃用）。

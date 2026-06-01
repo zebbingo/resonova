@@ -1,9 +1,9 @@
-# STT 测试平台 - 快速启动指南
+# Resonova - 快速启动指南
 
 ## 🏗️ 架构
 
 ```
-stt-test-tool/
+resonova/
 ├── backend/          # FastAPI 后端 (Python 3.13+)
 │   ├── server.py         # API + WebSocket
 │   ├── mqtt_bridge.py    # MQTT 设备模拟

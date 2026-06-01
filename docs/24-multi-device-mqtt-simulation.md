@@ -1,4 +1,4 @@
-# STT 测试平台 - 多设备管理 + MQTT 模拟 最终方案
+# Resonova - 多设备管理 + MQTT 模拟 最终方案
 
 > **更新时间**: 2026-05-20  
 > **状态**: ✅ 已完成，完美结合多设备管理和 MQTT 真实模拟
@@ -367,7 +367,7 @@ emit('updateStatus', { figurineId: 'doctor' })
 ## 🚀 启动命令
 
 ```bash
-cd d:\zebbingo\projects\stt-test-tool\frontend
+cd d:\zebbingo\projects\resonova\frontend
 pnpm install
 pnpm run dev
 ```
@@ -386,7 +386,7 @@ pnpm run dev
 4. **GET /api/media/stories** - 故事列表
 5. **GET /api/media/music** - 音乐列表
 
-详见：`d:\zebbingo\docs\03-plan\STT测试平台-MQTT真实模拟实施方案.md`
+详见：`d:\zebbingo\docs\03-plan\Resonova-MQTT真实模拟实施方案.md`
 
 ---
 

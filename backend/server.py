@@ -44,7 +44,7 @@ if _ENV_FILE.exists():
     load_dotenv(str(_ENV_FILE), override=True)
     print(f"[Config] 加载配置: {_ENV_FILE}")
 else:
-    print(f"[Config] ❌ 未找到配置文件: {_ENV_FILE}")
+    print(f"[Config] [x] 未找到配置文件: {_ENV_FILE}")
     print("[Config] 使用环境变量默认值（仅用于本地快速启动）")
 
 # 是否启用对话追踪功能（默认：测试环境启用，生产环境禁用）
@@ -1597,17 +1597,40 @@ def cleanup_orphan_sessions(max_age_seconds: float = 300):
     return {"cleaned": count}
 
 
-@app.get("/api/device/events/{session_id}")
-def poll_session_events(session_id: str):
-    """轮询获取 session 的事件（用于不支持 WebSocket 的前端）。"""
+@app.get("/api/device/events/{session_id_or_device}")
+def poll_session_events(session_id_or_device: str):
+    """轮询获取 session/device 的事件（用于不支持 WebSocket 的前端）。
+
+    - 优先按 session_id 精确匹配
+    - 按别名解析（preliminary_id → real_session_id）
+    - 最后按 device_id 读取（_emit_session 同时发布到 device_id）
+    """
     event_bus = simulation_manager.event_bus
-    q = event_bus._queues.get(session_id)
-    if q is None:
+    found_q = None
+
+    # 1. Direct match
+    found_q = event_bus._queues.get(session_id_or_device)
+
+    # 2. Alias resolution (preliminary_id → real_session_id)
+    if found_q is None:
+        resolved = simulation_manager._resolve_session_id(session_id_or_device)
+        if resolved != session_id_or_device:
+            found_q = event_bus._queues.get(resolved)
+
+    # 3. Device ID match — scan device list
+    if found_q is None:
+        for did, dev in simulation_manager._devices.items():
+            q = event_bus._queues.get(dev.device_id)
+            if q is not None and q.qsize() > 0:
+                found_q = q
+                break
+
+    if found_q is None:
         return {"events": []}
     events = []
     while True:
         try:
-            events.append(q.get_nowait())
+            events.append(found_q.get_nowait())
         except queue.Empty:
             break
     return {"events": events, "count": len(events)}

@@ -2,13 +2,13 @@
 
 > 文档编号: 19 | 版本: v1.0 | 日期: 2026-05-28
 
-本文档描述 VoicePipe 测试平台的服务管理（Service Manager）和 .env 配置管理功能。
+本文档描述 Resonova的服务管理（Service Manager）和 .env 配置管理功能。
 
 ---
 
 ## 1. 服务管理
 
-测试平台提供了完整的服务生命周期管理 API 和 UI，支持启动/停止/重启 chatbot 和 stt 两个套件。
+Resonova提供了完整的服务生命周期管理 API 和 UI，支持启动/停止/重启 chatbot 和 stt 两个套件。
 
 ### 1.1 后端 API
 
@@ -128,7 +128,7 @@ MQTT_HOST=127.0.0.1
 {
   "files": [
     {"id": "chatbot", "path": "/home/administrator/projects/chatbot/.env", "exists": true, "label": "Chatbot 后端", "description": "Zebbingo Chatbot 主应用配置"},
-    {"id": "stt-test-tool", "path": "/mnt/d/zebbingo/projects/stt-test-tool/.env", "exists": true, "label": "STT 测试平台", "description": "VoicePipe 测试平台后端配置"}
+    {"id": "resonova", "path": "/mnt/d/zebbingo/projects/resonova/.env", "exists": true, "label": "Resonova", "description": "Resonova后端配置"}
   ]
 }
 ```
@@ -251,7 +251,7 @@ def switch_env_option(path, key, target_value):
 
 ### 场景 1: 本地 ↔ 云端 MQTT 切换
 
-1. 打开测试平台 → 服务管理 → 展开 `.env 配置管理`
+1. 打开Resonova → 服务管理 → 展开 `.env 配置管理`
 2. 在 `MQTT_HOST` 组中点 `server-sg.zebbingo.com`
 3. 后端自动修改 `chatbot/.env`（注释掉 `127.0.0.1`，取消注释远程地址）
 4. 手动重启 chatbot 套件

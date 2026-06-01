@@ -1,4 +1,4 @@
-# STT 测试平台 - 软连接架构说明
+# Resonova - 软连接架构说明
 
 ## 🎯 设计目标
 
@@ -10,7 +10,7 @@
 ## 📁 目录结构
 
 ```
-stt-test-tool/
+resonova/
 ├── backend/
 │   ├── chatbot_src/          ← 软连接（symlink）
 │   │   └── (指向 ../../chatbot/src)
@@ -28,7 +28,7 @@ stt-test-tool/
 ### 创建命令
 
 ```powershell
-cd d:\zebbingo\projects\stt-test-tool\backend
+cd d:\zebbingo\projects\resonova\backend
 New-Item -ItemType SymbolicLink -Path chatbot_src -Target ..\..\chatbot\src
 ```
 

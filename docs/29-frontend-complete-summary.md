@@ -1,4 +1,4 @@
-# STT 测试平台 - 前端完善总结
+# Resonova - 前端完善总结
 
 > **完成时间**: 2026-05-20  
 > **状态**: ✅ 前端代码已完成，等待后端 API 实现
@@ -230,7 +230,7 @@ RTF (实时因子)   0.012       ← 绿色高亮
 ```
 浏览器 (Vue 3)
   ↓ HTTP POST /api/device/simulate
-FastAPI 后端 (stt-test-tool :8765)
+FastAPI 后端 (resonova :8765)
   ↓ MQTT Publish
 NanoMQ Broker (:1883，⚠️ Mosquitto 已弃用)
   ↓ MQTT Subscribe
@@ -256,7 +256,7 @@ Chatbot Backend (projects/chatbot/src)
 
 **安装命令**：
 ```bash
-cd d:\zebbingo\projects\stt-test-tool\frontend
+cd d:\zebbingo\projects\resonova\frontend
 pnpm install
 ```
 
@@ -266,7 +266,7 @@ pnpm install
 
 ```bash
 # 开发模式
-cd d:\zebbingo\projects\stt-test-tool\frontend
+cd d:\zebbingo\projects\resonova\frontend
 pnpm dev
 
 # 访问地址
@@ -403,7 +403,7 @@ http://localhost:5173
 ### 初始状态
 ```
 ┌──────────────────────────────────────────┐
-│ 🎤 STT 测试平台 - MQTT 设备模拟           │
+│ 🎤 Resonova - MQTT 设备模拟           │
 ├──────────────┬───────────────────────────┤
 │ 左侧：        │ 右侧：                     │
 │              │                           │

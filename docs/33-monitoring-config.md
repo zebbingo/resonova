@@ -16,15 +16,15 @@
 # 启用监控功能（默认：false）
 ENABLE_MONITORING=true
 
-# 测试平台后端 WebSocket 地址
+# Resonova后端 WebSocket 地址
 MONITORING_WEBSOCKET_URL=ws://192.168.52.134:8765/ws/monitoring
 ```
 
 **说明**：
 - `ENABLE_MONITORING`: 控制是否启用监控功能
-  - `true`: 启用监控，所有钩子事件会推送到测试平台
+  - `true`: 启用监控，所有钩子事件会推送到Resonova
   - `false`: 禁用监控，钩子代码不会执行（零性能开销）
-- `MONITORING_WEBSOCKET_URL`: 测试平台后端的 WebSocket 地址
+- `MONITORING_WEBSOCKET_URL`: Resonova后端的 WebSocket 地址
   - 如果 chatbot 运行在 WSL 中，使用 WSL IP（如 `192.168.52.134`）
   - 如果都在本地，使用 `ws://localhost:8765/ws/monitoring`
 
@@ -49,14 +49,14 @@ pip install websocket-client
 
 ### 3. 启动服务
 
-#### 启动测试平台后端
+#### 启动Resonova后端
 
 ```bash
-cd d:/zebbingo/projects/stt-test-tool/backend
+cd d:/zebbingo/projects/resonova/backend
 python server.py
 ```
 
-测试平台后端会在 `0.0.0.0:8765` 启动，并监听 `/ws/monitoring` 端点。
+Resonova后端会在 `0.0.0.0:8765` 启动，并监听 `/ws/monitoring` 端点。
 
 #### 启动 chatbot
 
@@ -150,12 +150,12 @@ Failed to connect WebSocket after 10 attempts
 ```
 
 **原因**：
-- 测试平台后端未启动
+- Resonova后端未启动
 - WebSocket URL 配置错误
 - 网络不通
 
 **解决方法**：
-1. 确认测试平台后端正在运行：`curl http://localhost:8765/health`
+1. 确认Resonova后端正在运行：`curl http://localhost:8765/health`
 2. 检查 `MONITORING_WEBSOCKET_URL` 配置是否正确
 3. 如果是跨机器访问，确认防火墙允许端口 8765
 
@@ -182,7 +182,7 @@ ModuleNotFoundError: No module named 'monitoring'
 ### 问题 3：监控事件未推送
 
 **现象**：
-- 测试平台后端日志显示客户端已连接
+- Resonova后端日志显示客户端已连接
 - 但收不到任何监控事件
 
 **原因**：

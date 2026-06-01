@@ -7,7 +7,7 @@
 1. **实时捕获**每个处理步骤的数据（STT、LLM、TTS）
 2. **零侵入**原有业务逻辑（不影响 chatbot 正常运行）
 3. **可配置**开关（生产环境禁用，测试环境启用）
-4. **实时推送**到测试平台后端（通过 WebSocket 或 HTTP）
+4. **实时推送**到Resonova后端（通过 WebSocket 或 HTTP）
 
 ---
 
@@ -65,7 +65,7 @@ chatbot/src/
 │   ├── __init__.py
 │   ├── hook_manager.py       # 钩子管理器
 │   ├── metrics_collector.py  # 指标收集器
-│   └── websocket_client.py   # WebSocket 客户端（推送到测试平台）
+│   └── websocket_client.py   # WebSocket 客户端（推送到Resonova）
 ```
 
 #### `monitoring/hook_manager.py`
@@ -130,7 +130,7 @@ class HookManager:
         # 记录指标
         self.metrics_collector.record(event_type, data)
         
-        # 推送到测试平台
+        # 推送到Resonova
         await self.ws_client.send({
             "type": event_type,
             "timestamp": time.time(),
@@ -253,7 +253,7 @@ class MetricsCollector:
 """
 WebSocket 客户端
 
-将监控数据实时推送到测试平台后端。
+将监控数据实时推送到Resonova后端。
 """
 
 import asyncio
@@ -269,7 +269,7 @@ except ImportError:
 
 
 class MonitoringWebSocketClient:
-    """WebSocket 客户端（推送到测试平台）。"""
+    """WebSocket 客户端（推送到Resonova）。"""
     
     def __init__(self):
         self.ws_url = os.getenv(
@@ -281,7 +281,7 @@ class MonitoringWebSocketClient:
         self._reconnect_delay = 1
     
     async def connect(self):
-        """连接到测试平台。"""
+        """连接到Resonova。"""
         if not websockets:
             logger.warning("websockets not installed, monitoring disabled")
             return
@@ -519,10 +519,10 @@ async def start_mqtt_for_device_async():
 
 ---
 
-### 第 4 步：测试平台后端接收监控数据
+### 第 4 步：Resonova后端接收监控数据
 
 ```python
-# backend/server.py (stt-test-tool)
+# backend/server.py (resonova)
 
 from fastapi import FastAPI, WebSocket
 import asyncio
@@ -589,7 +589,7 @@ def get_monitoring_summary():
 
 # 监控配置
 MONITORING_ENABLED=true                    # 是否启用监控
-MONITORING_WS_URL=ws://192.168.52.1:8765/ws/monitoring  # 测试平台 WebSocket 地址
+MONITORING_WS_URL=ws://192.168.52.1:8765/ws/monitoring  # Resonova WebSocket 地址
 ```
 
 ### 性能影响
@@ -617,5 +617,5 @@ MONITORING_WS_URL=ws://192.168.52.1:8765/ws/monitoring  # 测试平台 WebSocket
 1. **创建 monitoring 模块**（4 个文件）
 2. **在 5 个关键处理器中植入钩子**
 3. **初始化监控模块**（bot_mqtt.py）
-4. **测试平台后端接收数据**
+4. **Resonova后端接收数据**
 5. **前端可视化监控面板**

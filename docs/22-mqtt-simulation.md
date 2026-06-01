@@ -15,7 +15,7 @@
 
 ## 🎯 功能概述
 
-STT 测试平台提供**真实的 MQTT 设备模拟**功能，通过标准 MQTT 协议与 chatbot 后端进行通信，完整模拟真实设备的会话生命周期。
+Resonova提供**真实的 MQTT 设备模拟**功能，通过标准 MQTT 协议与 chatbot 后端进行通信，完整模拟真实设备的会话生命周期。
 
 **关键特性**：
 - ✅ **真实 MQTT 调用**：不是模拟，是真实的 MQTT 协议通信
@@ -406,7 +406,7 @@ MQTT_PORT=1883               # MQTT 端口
 MQTT_ENV=development         # 环境标识
 MQTT_TLS=false               # 是否使用 TLS
 
-# 可选：测试平台也可以显式指定 broker / relay
+# 可选：Resonova也可以显式指定 broker / relay
 # mqtt_env / mqtt_host / mqtt_port / mqtt_tls
 
 # MySQL 配置（用于查询角色和音频）
@@ -418,7 +418,7 @@ MYSQL_DATABASE=ZebbieDb
 
 ### 基础设施归属说明
 
-- 本地 MQTT Broker 属于测试平台的基础设施，不是业务服务本身。
+- 本地 MQTT Broker 属于Resonova的基础设施，不是业务服务本身。
 - workspace 里的脚本负责安装、启动和检查 broker，例如：
   - `scripts/setup-local-db.sh`
   - `scripts/install-mongo-mqtt.sh`
@@ -428,7 +428,7 @@ MYSQL_DATABASE=ZebbieDb
   - `Setup EMQX for Yusheng`
   - Assignee: `Han Wu`
   - 这说明 broker 基础设施曾以 EMQX 任务形式被单独搭建和维护。
-- 当前测试平台默认连本地 NanoMQ；需要更贴近生产时，可以显式切到 relay / remote broker。
+- 当前Resonova默认连本地 NanoMQ；需要更贴近生产时，可以显式切到 relay / remote broker。
 
 ### 历史实现线索
 
@@ -439,7 +439,7 @@ MYSQL_DATABASE=ZebbieDb
 - `MQTT with input output using opus`、`MQTT Send Test with Chiptalk` 继续把链路往 opus 音频 + MQTT 设备协议方向推进。
 - 现有实现里的 `projects/chatbot/src/mqtt_test_client.py` 和 `tests/integration/mqtt/device_simulator.py`，分别可以视为参考客户端和集成测试模拟器的代码化落点。
 
-所以，本地 NanoMQ、MQTT 模拟器、设备模拟应该统一视为**测试平台基础设施**的一部分，而不是临时调试附属品。
+所以，本地 NanoMQ、MQTT 模拟器、设备模拟应该统一视为**Resonova基础设施**的一部分，而不是临时调试附属品。
 
 ### 最大并发数
 
@@ -643,7 +643,7 @@ bash scripts/wsl/check-mqtt-broker.sh
 
 #### 🎯 核心目标
 
-**实现真正的「白盒测试」**：测试平台不再是外部模拟器，而是直接嵌入 chatbot 后端，监控完整的处理链路。
+**实现真正的「白盒测试」**：Resonova不再是外部模拟器，而是直接嵌入 chatbot 后端，监控完整的处理链路。
 
 #### 📊 架构对比
 
@@ -811,7 +811,7 @@ def transcribe(audio_data: bytes) -> dict:
 
 ##### 3. 实时监控 WebSocket
 
-测试平台后端通过 WebSocket 实时推送每个步骤的指标：
+Resonova后端通过 WebSocket 实时推送每个步骤的指标：
 
 ```python
 # backend/instrumentation_server.py
@@ -926,6 +926,6 @@ async def instrumentation_ws(websocket: WebSocket, session_id: str):
 
 **当前状态**：✅ 已实现真实的 MQTT 全链路调用，可以完整测试 chatbot 的 STT/TTS 功能。
 
-**下一步**：🎯 通过配置化映射和 Hook 注入，实现源码级别的白盒监控，让测试平台成为 chatbot 的「X-Ray 透视仪」。
+**下一步**：🎯 通过配置化映射和 Hook 注入，实现源码级别的白盒监控，让Resonova成为 chatbot 的「X-Ray 透视仪」。
 
-**最终目标**：🚀 打造业界领先的 AI 对话系统测试平台，支持从协议层到函数层的全方位监控和分析。
+**最终目标**：🚀 打造业界领先的 AI 对话系统Resonova，支持从协议层到函数层的全方位监控和分析。

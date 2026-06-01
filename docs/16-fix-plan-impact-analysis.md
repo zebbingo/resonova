@@ -9,9 +9,9 @@
 
 | # | 问题 | 严重度 | 影响范围 | 修复复杂度 |
 |:-:|:-----|:------:|:---------|:----------:|
-| 1 | 模拟引擎竞态条件 | 🔴 P0 | 测试平台模拟器所有连续 simulate 请求 | 低（~10 行） |
+| 1 | 模拟引擎竞态条件 | 🔴 P0 | Resonova模拟器所有连续 simulate 请求 | 低（~10 行） |
 | 2 | VAD 阻断 STT 触发 | 🔴 P0 | 所有 MQTT 音频 session（全链路核心断点） | 低（环境变量）~ 中（代码级） |
-| 3 | 模拟错误不透明 | 🟠 P1 | 测试平台用户体验 | 低 |
+| 3 | 模拟错误不透明 | 🟠 P1 | Resonova用户体验 | 低 |
 | 4 | 测试脚本超时不足 | 🟡 P2 | 自动化测试可靠性 | 低 |
 
 ---
@@ -24,7 +24,7 @@
 |:-----|:-----|
 | **触发条件** | 在已有模拟运行时，发送第 2 个 `/api/device/simulate` 请求 |
 | **影响组件** | `mqtt_bridge.py` — `SimulationManager.start_simulation()` / `run_simulation()` |
-| **影响用户** | 测试平台用户（开发者做全链路测试时） |
+| **影响用户** | Resonova用户（开发者做全链路测试时） |
 | **影响结果** | API 返回 200 OK，后台静默失败，session 停留在 "pending"，300s 后被清理为 "orphan_cleaned" |
 | **波及 session** | 仅当前 device_id 的后一次模拟请求失败（不会影响其他设备） |
 | **复现率** | ~80%（连续请求时几乎必现） |
@@ -105,7 +105,7 @@ export MQTT_SHOULD_SEND_RESPONSE_CHUNK=true
 ```
 **原理：** 关闭 VAD 模式后，EOS 消息直接触发 `_finalize_turn_input` → 调用 STT
 **优点：** 零代码改动，立即验证管道是否正常
-**缺点：** 测试平台也需要测试 VAD，不能永远 bypass
+**缺点：** Resonova也需要测试 VAD，不能永远 bypass
 **验证：** 2026-05-29 16:35 实测通过（STT: "Can you speak Chinese." → LLM → TTS: 319 chunks）
 
 #### 方案 B：代码级 VAD 回退修复（长期方案）⭐ 已实现并验证
@@ -150,7 +150,7 @@ export MQTT_SHOULD_SEND_RESPONSE_CHUNK=true
 |:-----|:-----|
 | **触发条件** | 任何模拟执行失败时 |
 | **影响组件** | `mqtt_bridge.py` — `_run()` 中 `try/except` 只日志不 propagate |
-| **影响用户** | 测试平台 API 调用者 |
+| **影响用户** | Resonova API 调用者 |
 | **影响结果** | 用户看到 200 OK，不知道后台失败 |
 
 ### 🔍 根因
@@ -243,7 +243,7 @@ def _run(self, ...):
 
 | 问题 | 影响范围 | 用户可见性 | 修复后需验证 |
 |:-----|:---------|:----------|:-------------|
-| 竞态条件 | 仅测试平台连续 simulate | ⛔ 不可见（API 200 但失败） | 连续 3 次 simulate 均成功 |
+| 竞态条件 | 仅Resonova连续 simulate | ⛔ 不可见（API 200 但失败） | 连续 3 次 simulate 均成功 |
 | VAD 阻断 STT | **所有对话用户 + 所有 session** | ✅ 可见（永远超时无回复） | STT/TTS 有输出 |
-| 错误不透明 | 测试平台用户 | ⛔ 不可见 | API 返回 error 字段 |
+| 错误不透明 | Resonova用户 | ⛔ 不可见 | API 返回 error 字段 |
 | 脚本超时 | 自动化测试 | ⛔ 不可见 | 脚本通过率 |

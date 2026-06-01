@@ -91,7 +91,7 @@ Redis SETNX sess:<session_id> = worker_id  ← 原子认领
 
 ---
 
-## 5. 对测试平台改进的建议（已做 + 待做）
+## 5. 对Resonova改进的建议（已做 + 待做）
 
 ### ✅ 已修
 | 修复 | 说明 |

@@ -2,7 +2,7 @@
 
 > 文档编号: 20 | 版本: v1.1 | 日期: 2026-05-29
 
-本文档描述 VoicePipe 测试平台（stt-test-tool）的开发环境架构，重点说明前后端如何跨 Windows 和 WSL 协作。
+本文档描述 Resonova的开发环境架构，重点说明前后端如何跨 Windows 和 WSL 协作。
 
 ---
 
@@ -12,14 +12,14 @@
 Windows 11 (D: drive)                    WSL2 Ubuntu (192.168.52.134)
 ──────────────────────────              ──────────────────────────────
 
-┌─ stt-test-tool-frontend/ ─┐          ┌─ stt-test-tool/ (软链) ─────┐
+┌─ frontend/ ─┐          ┌─ resonova/ (软链) ─────┐
 │                           │          │                              │
 │  Vite Dev Server (:5173)  │  proxy   │  uvicorn server.py (:8765)   │
 │                           │────/api──▶  FastAPI 后端                │
 │  pnpm dev                 │────/ws───▶  WebSocket 事件总线          │
 │  HMR 热更新               │          │                              │
 │                           │          │  /home/administrator/        │
-│  vite.config.ts           │          │    projects/stt-test-tool    │
+│  vite.config.ts           │          │    projects/resonova    │
 │    ├── /api → WSL:8765    │          │       → 软链到 D: drive      │
 │    └── /ws  → WSL:8765    │          │                              │
 │                           │          │  chatbot_src                 │
@@ -30,7 +30,7 @@ Windows 11 (D: drive)                    WSL2 Ubuntu (192.168.52.134)
 
 ### 核心设计原则
 
-- **一份源码**：后端代码 `stt-test-tool/` 只在 D: drive 上一份，WSL 通过软链访问
+- **一份源码**：后端代码 `resonova/` 只在 D: drive 上一份，WSL 通过软链访问
 - **前后端分离**：前端源码和后端源码解耦，前端只通过 HTTP/WS 与后端通信
 - **跨平台代理**：前端 Vite 开发服务器在 Windows 上运行，通过 proxy 转发到 WSL 后端
 - **无需构建**：开发阶段前端不 build dist，直接用 Vite HMR
@@ -41,10 +41,10 @@ Windows 11 (D: drive)                    WSL2 Ubuntu (192.168.52.134)
 
 | 路径 | 说明 | 类型 |
 |------|------|------|
-| `D:\zebbingo\projects\stt-test-tool\` | 后端 Python 代码（唯一源码） | git repo (master) |
-| `D:\zebbingo\projects\stt-test-tool-frontend\` | 前端 Vue 3 代码 | git repo (main) |
-| `WSL /home/.../stt-test-tool\` | **软链** → `D:\...\stt-test-tool\` | 软链 |
-| `WSL /home/.../stt-test-tool/backend/chatbot_src\` | **软链** → `WSL /home/.../chatbot/src\` | 软链 |
+| `D:\zebbingo\projects\resonova\` | 后端 Python 代码（唯一源码） | git repo (master) |
+| `D:\zebbingo\projects\resonova\frontend\` | 前端 Vue 3 代码 | git repo (main) |
+| `WSL /home/.../resonova\` | **软链** → `D:\...\resonova\` | 软链 |
+| `WSL /home/.../resonova/backend/chatbot_src\` | **软链** → `WSL /home/.../chatbot/src\` | 软链 |
 | `D:\zebbingo\projects\chatbot\` | **软链** → `WSL /home/.../chatbot\` | 软链 |
 
 > 软链使得 AI 工具从 Windows 路径也能访问 WSL 中的代码，维护一份代码即可。
@@ -55,8 +55,8 @@ Windows 11 (D: drive)                    WSL2 Ubuntu (192.168.52.134)
 |------|---------|----------------|------|
 | chatbot 后端 | WSL | ✅ | Python 进程跑在 WSL，必须访问源码 |
 | chatbot 前端 | WSL | ✅ | Next.js 跑在 WSL，必须访问源码 |
-| stt-test-tool 后端 | WSL | ✅ | uvicorn 跑在 WSL，必须访问源码 |
-| stt-test-tool 前端 | **Windows** | ❌ | Vite 跑在 Windows，源码在 Windows 即可 |
+| resonova 后端 | WSL | ✅ | uvicorn 跑在 WSL，必须访问源码 |
+| resonova 前端 | **Windows** | ❌ | Vite 跑在 Windows，源码在 Windows 即可 |
 
 ---
 
@@ -74,7 +74,7 @@ Windows 11 (D: drive)                    WSL2 Ubuntu (192.168.52.134)
 
 ```bash
 # 在 Windows 终端（D: drive）
-cd D:\zebbingo\projects\stt-test-tool-frontend
+cd D:\zebbingo\projects\resonova\frontend
 pnpm dev
 # 启动 Vite 开发服务器，监听 :5173
 ```
@@ -103,7 +103,7 @@ server: {
 
 ```python
 # server.py
-_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "stt-test-tool-frontend" / "dist"
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "frontend" / "dist"
 
 if _FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")))
@@ -111,7 +111,7 @@ if _FRONTEND_DIST.exists():
 
 ```bash
 # 构建前端
-cd D:\zebbingo\projects\stt-test-tool-frontend
+cd D:\zebbingo\projects\resonova\frontend
 pnpm build
 # 输出到 dist/
 
@@ -171,8 +171,8 @@ pnpm build
 
 | 服务 | WSL 端口 | Windows 端口 | 说明 |
 |------|---------|-------------|------|
-| stt-test-tool 后端 | :8765 | :8765 (portproxy) | FastAPI + uvicorn |
-| stt-test-tool 前端 | — | :5173 | Vite 开发服务器 |
+| resonova 后端 | :8765 | :8765 (portproxy) | FastAPI + uvicorn |
+| resonova 前端 | — | :5173 | Vite 开发服务器 |
 | chatbot 后端 | :7860 | :7860 (portproxy) | bot_runner |
 | chatbot 前端 | :3000 | :3000 (portproxy) | Next.js |
 | MQTT Broker | :1883 | — | NanoMQ（仅 WSL，2026-04-21 替代 Mosquitto） |
@@ -183,12 +183,12 @@ pnpm build
 
 ### 7.1 问题：WSL 上存在前端源码副本
 
-早期前后端没有分离，前端源码在 WSL 上也有一份副本（/home/administrator/projects/stt-test-tool-frontend），且与 D: drive 上的 git repo 版本不一致。
+早期前后端没有分离，前端源码在 WSL 上也有一份副本（/home/administrator/projects/resonova/frontend），且与 D: drive 上的 git repo 版本不一致。
 
 ### 7.2 解决
 
 1. 对比两个副本的差异（6 个文件不同，D: drive 版本更新）
-2. 备份 WSL 副本 → `stt-test-tool-frontend.bak.20260529_114653/`
+2. 备份 WSL 副本 → `frontend.bak.20260529_114653/`
 3. 删除 WSL 副本（前端不在 WSL 上运行）
 4. 统一包管理器为 pnpm（从备份恢复 `.npmrc` + `pnpm-lock.yaml`）
 5. 修复 TypeScript 类型错误（`?.` 可选链保护）
@@ -198,8 +198,8 @@ pnpm build
 
 ```
 WSL /home/.../projects/             Windows D:\zebbingo\projects\
-├── chatbot/          ← REAL       ├── stt-test-tool/          ← git (master)
-├── stt-test-tool/    ← SYMLINK    ├── stt-test-tool-frontend/ ← git (main), pnpm
+├── chatbot/          ← REAL       ├── resonova/          ← git (master)
+├── resonova/    ← SYMLINK    ├── frontend/ ← git (main), pnpm
 └── .bak.*/           ← 备份       ├── chatbot → SYMLINK to WSL
 
 ---
@@ -208,7 +208,7 @@ WSL /home/.../projects/             Windows D:\zebbingo\projects\
 
 ### 8.1 问题：代码冗余和 git 混乱
 
-测试平台前后端分离过程中，后端代码产生了多处副本和 git 追踪垃圾：
+Resonova前后端分离过程中，后端代码产生了多处副本和 git 追踪垃圾：
 
 | 问题 | 数量 |
 |------|------|
@@ -222,9 +222,9 @@ WSL /home/.../projects/             Windows D:\zebbingo\projects\
 
 每个待清理文件都做了内容级对比：
 
-1. **对比 `stt-test-tool/backend/scripts/` vs `chatbot/scripts/`** — 确认 6 个脚本完全一致（chatbot 有副本）
-2. **对比 `stt-test-tool/backend/` vs `stt-test-tool-frontend/backend/`** — 确认内容完全一致（diff 为 IDENTICAL）
-3. **检查 `db/migrations/` 归属** — 确认是测试平台独有，非 chatbot 副本
+1. **对比 `resonova/backend/scripts/` vs `chatbot/scripts/`** — 确认 6 个脚本完全一致（chatbot 有副本）
+2. **对比 `resonova/backend/` vs `frontend/backend/`** — 确认内容完全一致（diff 为 IDENTICAL）
+3. **检查 `db/migrations/` 归属** — 确认是Resonova独有，非 chatbot 副本
 4. **检查 71 个 JSON 内容** — 确认都是 5 行自动生成，无手工数据
 5. **回溯 git 历史** — 确认哪些文件已被旧 commit 追踪
 
@@ -233,11 +233,11 @@ WSL /home/.../projects/             Windows D:\zebbingo\projects\
 | 操作 | 数量 | 备份位置 |
 |------|------|---------|
 | `git rm --cached` 设备 JSON | 71 | 磁盘保留，git 不再追踪 |
-| `git rm` 遗留脚本 | 7 | `stt-test-tool.cleanup-bak.20260529/scripts/` |
-| `git rm` 辅助文件 | 3 | `stt-test-tool.cleanup-bak.20260529/backend/` |
-| 删除 frontend/backend/ 重复 .py | 7 | `stt-test-tool.cleanup-bak.20260529/frontend-backend.tar` |
+| `git rm` 遗留脚本 | 7 | `resonova.cleanup-bak.20260529/scripts/` |
+| `git rm` 辅助文件 | 3 | `resonova.cleanup-bak.20260529/backend/` |
+| 删除 frontend/backend/ 重复 .py | 7 | `resonova.cleanup-bak.20260529/frontend-backend.tar` |
 | 删除 frontend/backend/.venv | 229MB | 已删除不备份（可从 dep 重建） |
-| 删除 frontend/backend/ 剩余重复文件 | 15 项（md/json/缓存/egg-info） | `stt-test-tool.cleanup-bak.20260529/frontend-backend-2/` |
+| 删除 frontend/backend/ 剩余重复文件 | 15 项（md/json/缓存/egg-info） | `resonova.cleanup-bak.20260529/frontend-backend-2/` |
 | 删除 root 空 .venv | 0 字节 | 无备份 |
 | 追踪有用工具脚本 | 5 个新增 | 新增至 git |
 
@@ -245,9 +245,9 @@ WSL /home/.../projects/             Windows D:\zebbingo\projects\
 
 | 文件 | 原因 |
 |------|------|
-| `_check_mysql.py` | 测试平台独有 MySQL 诊断工具 |
-| `verify_aws_iot.py` | 测试平台独有 AWS IoT 验证工具 |
-| `db/migrations/` | 测试平台自己的数据库迁移（2 个 SQL） |
+| `_check_mysql.py` | Resonova独有 MySQL 诊断工具 |
+| `verify_aws_iot.py` | Resonova独有 AWS IoT 验证工具 |
+| `db/migrations/` | Resonova自己的数据库迁移（2 个 SQL） |
 | `grant_*.sql`、`grant_remote.sh` | 数据库授权脚本 |
 | `run_migration.py`、`run_figurine_audio_migration.py` | 迁移执行器 |
 | `backend/.venv` | 正在使用（168MB） |
@@ -258,7 +258,7 @@ WSL /home/.../projects/             Windows D:\zebbingo\projects\
 git tracked: 65 files (从 132 减少)
 git dirty:  0 files
 remote:     origin/master (已推送)
-backup:     /home/administrator/projects/stt-test-tool.cleanup-bak.20260529/
+backup:     /home/administrator/projects/resonova.cleanup-bak.20260529/
 ```
 
 ### 8.6 项目历史提交记录

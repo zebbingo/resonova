@@ -82,7 +82,7 @@ if MONITORING_AVAILABLE and HookManager:
 
 ---
 
-### 4. 测试平台后端接收端点（stt-test-tool/backend/server.py）
+### 4. Resonova后端接收端点（resonova/backend/server.py）
 
 #### 📡 WebSocket 端点
 
@@ -205,8 +205,8 @@ graph LR
 
 3. **启动服务**
    ```bash
-   # 终端 1：启动测试平台后端
-   cd d:/zebbingo/projects/stt-test-tool/backend
+   # 终端 1：启动Resonova后端
+   cd d:/zebbingo/projects/resonova/backend
    python server.py
    
    # 终端 2：启动 chatbot
@@ -216,7 +216,7 @@ graph LR
 
 4. **验证监控**
    - 查看 chatbot 日志：应显示 "Monitoring ENABLED"
-   - 查看测试平台日志：应显示 "Monitoring client connected"
+   - 查看Resonova日志：应显示 "Monitoring client connected"
    - 触发一次对话，观察监控事件是否推送
 
 ---
@@ -301,7 +301,7 @@ while self._reconnect_attempts < self._max_reconnect_attempts:
 ✅ 创建了完整的监控模块（HookManager + WebSocketClient）  
 ✅ 在 5 个关键处理器中植入了监控钩子  
 ✅ 实现了可配置的开关机制  
-✅ 搭建了测试平台后端接收端点  
+✅ 搭建了Resonova后端接收端点  
 ✅ 编写了详细的配置文档  
 
 **核心价值**：

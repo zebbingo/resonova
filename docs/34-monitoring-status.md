@@ -19,8 +19,8 @@
 - ✅ `chatbot/pyproject.toml` - 添加 websocket-client 依赖
 - ✅ `chatbot/.env` - 添加监控配置
 
-#### 🌐 测试平台后端
-- ✅ `stt-test-tool/backend/server.py` - 添加 `/ws/monitoring` WebSocket 端点
+#### 🌐 Resonova后端
+- ✅ `resonova/backend/server.py` - 添加 `/ws/monitoring` WebSocket 端点
 - ✅ **服务已启动**：`http://0.0.0.0:8765`
 
 #### 📚 文档
@@ -81,7 +81,7 @@ Monitoring client connected. Total clients: 1
 
 ### 第 3 步：验证监控连接
 
-1. **检查 stt-test-tool backend 日志**：
+1. **检查 resonova backend 日志**：
    ```
    INFO: Monitoring client connected. Total clients: 1
    ```
@@ -91,7 +91,7 @@ Monitoring client connected. Total clients: 1
    - 观察是否有监控事件推送
 
 3. **查看监控事件**：
-   - 在 stt-test-tool backend 日志中应该看到接收到的监控事件
+   - 在 resonova backend 日志中应该看到接收到的监控事件
    - 事件类型包括：`intro_start`, `stt_inference`, `llm_inference`, `tts_synthesis`, `mqtt_publish`
 
 ### 第 4 步：前端集成（待另一个 AI 完成）
@@ -161,7 +161,7 @@ Failed to connect WebSocket after 10 attempts
 ```
 
 **解决方法**：
-1. 确认 stt-test-tool backend 正在运行：`curl http://localhost:8765/health`
+1. 确认 resonova backend 正在运行：`curl http://localhost:8765/health`
 2. 检查 `MONITORING_WEBSOCKET_URL` 配置是否正确
 3. 确认防火墙允许端口 8765
 

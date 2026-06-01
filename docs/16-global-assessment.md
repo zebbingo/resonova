@@ -1,6 +1,6 @@
-# 测试平台全局评估报告
+# Resonova全局评估报告
 
-> 评估范围：stt-test-tool + chatbot 两项目 | 评估时间：2026-05-27 15:30
+> 评估范围：resonova + chatbot 两项目 | 评估时间：2026-05-27 15:30
 > 基于：git 提交历史 + 文件系统扫描 + 代码审计
 
 ---
@@ -109,7 +109,7 @@ IDLE → SESSION_ACTIVE → CAPTURING → THINKING → PLAYING → DRAINING → 
 | 06-conversation | 对话约束、摘要、回合策略 | ✅ 完整 |
 | 07-features | 家长控制、语言管理、Gen1 协议 | ✅ 完整 |
 
-### stt-test-tool 文档（14 份）
+### resonova 文档（14 份）
 
 | 文档 | 状态 |
 |:-----|:----:|
@@ -134,7 +134,7 @@ IDLE → SESSION_ACTIVE → CAPTURING → THINKING → PLAYING → DRAINING → 
 
 | 项目 | 情况 |
 |:-----|:------|
-| TODO 残留 | stt-test-tool backend/ 下 **0 个** |
+| TODO 残留 | resonova backend/ 下 **0 个** |
 | TODO 残留 | chatbot src/ 下 voice 相关 **0 个** |
 | 唯一 TODO | `model_moderation_service.py:240`（与 voice 无关） |
 | 未跟踪文件 | db/ 子模块 2 个 migration SQL 尚未入库 |

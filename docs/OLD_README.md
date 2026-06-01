@@ -1,4 +1,4 @@
-# STT 测试平台 / Voice Command 全链路测试平台
+# Resonova
 
 基于 sherpa-onnx SenseVoice 的语音识别测试工具，支持模拟 MQTT 设备模式，覆盖语音指令拦截全链路可观测性。
 
@@ -38,7 +38,7 @@ Windows (IDE + 浏览器)           WSL (Ubuntu)
 
 ```bash
 wsl ~
-cd /home/administrator/projects/stt-test-tool
+cd /home/administrator/projects/resonova
 uv sync          # 首次: 创建 .venv + 安装依赖
 ```
 
@@ -46,7 +46,7 @@ uv sync          # 首次: 创建 .venv + 安装依赖
 
 ```bash
 wsl ~
-cd /home/administrator/projects/stt-test-tool
+cd /home/administrator/projects/resonova
 uv run python server.py
 ```
 
@@ -55,7 +55,7 @@ uv run python server.py
 ### 3. 前端（Windows）— 启动开发服务器
 
 ```bash
-cd d:\zebbingo\projects\stt-test-tool\frontend
+cd d:\zebbingo\projects\resonova\frontend
 pnpm install  # 首次需要安装依赖
 pnpm dev
 ```
@@ -66,7 +66,7 @@ pnpm dev
 
 ### 4. chatbot 监控钩子配置
 
-测试平台的监控 WebSocket 依赖 chatbot 端主动推送埋点事件，在 chatbot `.env` 中配置：
+Resonova的监控 WebSocket 依赖 chatbot 端主动推送埋点事件，在 chatbot `.env` 中配置：
 
 ```dotenv
 # 启用监控钩子
@@ -102,7 +102,7 @@ MONITORING_WEBSOCKET_URL=ws://localhost:8765/ws/monitoring
 #### 数据流
 
 ```
-chatbot 处理链                           测试平台
+chatbot 处理链                           Resonova
 ─────────────────                       ──────────
 用户说话 → KwsProcessor ──kws_match────→ server.py:8765
         → ASR/STT                         WS /ws/monitoring
@@ -131,7 +131,7 @@ chatbot 处理链                           测试平台
 
 #### 如何验证指令拦截
 
-1. 启动测试平台后端 + 前端
+1. 启动Resonova后端 + 前端
 2. 在设备管理面板添加设备 → 选择角色 → 连接
 3. 用测试音频发起模拟对话
 4. 在"指令拦截"面板查看实时拦截记录
@@ -239,7 +239,7 @@ uv sync --frozen
 
 **问题**: 前端监控面板无数据
 **解决**: 
-- 确认 chatbot `.env` 中 `ENABLE_MONITORING=true` 且 `MONITORING_WEBSOCKET_URL` 指向正确的测试平台地址
+- 确认 chatbot `.env` 中 `ENABLE_MONITORING=true` 且 `MONITORING_WEBSOCKET_URL` 指向正确的Resonova地址
 - 检查 chatbot 日志是否有 `Monitoring ENABLED` 日志
 - 检查 server.py 日志是否有 `MONITORING: Connection from` 日志
 - 确认前端连接了 `ws://localhost:8765/ws/monitoring/events`

@@ -14,7 +14,6 @@
 """
 
 import numpy as np
-import opuslib_next
 
 # ── 规范常量 ──────────────────────────────────────────────────────────
 PCM_SR = 16000                     # 采样率 (Hz)
@@ -24,11 +23,20 @@ PCM_MAX_INT16 = 32767              # int16 最大值
 PCM_MIN_INT16 = -32768             # int16 最小值
 PCM_SCALE_FACTOR = 32768.0         # float32↔int16 对称换算因子
 
-# Opus 编码参数
+# Opus 编码参数（opuslib_next 惰性导入）
 OPUS_FRAME_SAMPLES = 960            # 16kHz × 60ms
 OPUS_FRAME_MS = 60                  # 每帧时长 (ms)
-OPUS_APPLICATION = opuslib_next.APPLICATION_AUDIO  # Opus 编码模式
+_opus_application = None            # 第一次使用时惰性初始化
 OPUS_FRAME_BYTES = OPUS_FRAME_SAMPLES * 2           # 每帧 PCM 字节数
+
+
+def _get_opus_app() -> int:
+    """惰性获取 opuslib_next.APPLICATION_AUDIO，避免模块级导入失败。"""
+    global _opus_application
+    if _opus_application is None:
+        import opuslib_next  # noqa: PLC0415
+        _opus_application = opuslib_next.APPLICATION_AUDIO
+    return _opus_application
 
 
 # ── 核心转换函数 ──────────────────────────────────────────────────────
@@ -74,8 +82,10 @@ def encode_opus(pcm_int16: np.ndarray, frame_size: int = OPUS_FRAME_SAMPLES) -> 
     """Opus 编码：int16 PCM ndarray → Opus packet bytes
 
     编码器输入始终为 int16 PCM bytes（np.asarray + .tobytes()）。
+    首次调用时惰性加载 opuslib_next。
     """
-    encoder = opuslib_next.Encoder(PCM_SR, PCM_CHANNELS, OPUS_APPLICATION)
+    import opuslib_next  # noqa: PLC0415
+    encoder = opuslib_next.Encoder(PCM_SR, PCM_CHANNELS, _get_opus_app())
     return encoder.encode(
         np.asarray(pcm_int16, dtype=np.int16).tobytes(),
         frame_size,
@@ -83,7 +93,11 @@ def encode_opus(pcm_int16: np.ndarray, frame_size: int = OPUS_FRAME_SAMPLES) -> 
 
 
 def decode_opus(opus_bytes: bytes, frame_size: int = OPUS_FRAME_SAMPLES) -> np.ndarray:
-    """Opus 解码：Opus packet bytes → int16 PCM ndarray"""
+    """Opus 解码：Opus packet bytes → int16 PCM ndarray
+
+    首次调用时惰性加载 opuslib_next。
+    """
+    import opuslib_next  # noqa: PLC0415
     decoder = opuslib_next.Decoder(PCM_SR, PCM_CHANNELS)
     pcm_bytes = decoder.decode(opus_bytes, frame_size)
     return np.frombuffer(pcm_bytes, dtype=np.int16)
