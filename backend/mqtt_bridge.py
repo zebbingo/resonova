@@ -992,6 +992,34 @@ class SimulationManager:
         t = threading.Thread(target=_loop, daemon=True, name="device-cleanup")
         t.start()
 
+    def _stop_device_simulation(self, device_id: str, wait_timeout: float = 10.0) -> bool:
+        """Request a running simulation to stop and wait for its worker thread.
+
+        The simulator uses a per-device background thread. If a new simulation
+        starts before the old worker has exited, the two runs can overlap and
+        produce empty or partial results. Keeping the handoff serialized makes
+        repeated simulate calls predictable.
+        """
+        with self._lock:
+            dev = self._devices.get(device_id)
+            thread = self._threads.get(device_id)
+            if dev is None or not dev.is_simulating:
+                return True
+            dev.stop_current_session()
+
+        if thread and thread.is_alive():
+            thread.join(timeout=wait_timeout)
+
+        with self._lock:
+            dev = self._devices.get(device_id)
+            still_simulating = bool(dev and dev.is_simulating)
+
+        if still_simulating:
+            logger.warning("Device %s is still simulating after stop request", device_id)
+            return False
+
+        return True
+
     @property
     def devices(self) -> dict[str, ConnectedDevice]:
         return self._devices
@@ -1499,20 +1527,13 @@ class SimulationManager:
 
         with self._lock:
             dev = self._devices.get(device_id)
-            if dev and dev.is_simulating:
-                dev.stop_current_session()
-                # Force reset simulation flag - stop_current_session is async
-                dev._simulating = False
-                dev._stop_requested = False
+            needs_stop = bool(dev and dev.is_simulating)
 
-        if dev and dev.is_connected and dev.is_simulating:
-            for _ in range(50):
-                time.sleep(0.1)
-                if not dev.is_simulating:
-                    break
-            else:
-                logger.warning("Device %s still simulating after 5s, force-clearing", device_id)
-                dev._simulating = False
+        if needs_stop and not self._stop_device_simulation(device_id):
+            raise ValueError(f"Device {device_id} is still stopping a previous simulation")
+
+        with self._lock:
+            dev = self._devices.get(device_id)
 
         if dev is not None and dev.is_connected:
             needs_reconnect = (

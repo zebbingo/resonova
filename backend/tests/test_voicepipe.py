@@ -662,7 +662,7 @@ class TestSimulationManager:
                 self.is_connected = False
 
             def run_session(self, wav_path, audio_id="", speed=0, subscribe_response=False):
-                return SimpleNamespace(
+                return mqtt_bridge.SimulationResult(
                     session_id="real-session-1",
                     device_id=self.device_id,
                     figurine_id=self.figurine_id,
@@ -674,18 +674,6 @@ class TestSimulationManager:
                     send_duration_sec=0.5,
                     started_at=time.time(),
                     completed_at=time.time(),
-                    stt_text="",
-                    stt_confidence=0.0,
-                    stt_language="",
-                    tts_response_count=0,
-                    tts_chunks=0,
-                    tts_duration_ms=0,
-                    reply_text="",
-                    backend_responses=[],
-                    error="",
-                    cue_count=0,
-                    commands_received=0,
-                    stt_texts=[],
                 )
 
             def get_fw_status(self):
@@ -712,6 +700,96 @@ class TestSimulationManager:
         assert result is not None
         assert result["status"] == "completed"
         assert result["device_id"] == "dev-auto"
+
+    def test_start_simulation_waits_for_previous_thread_to_exit(self, tmp_path):
+        import mqtt_bridge
+
+        stop_requested = threading.Event()
+        allow_old_exit = threading.Event()
+        new_run_started = threading.Event()
+        call_finished = threading.Event()
+
+        class FakeDevice:
+            def __init__(self):
+                self.device_id = "dev-race"
+                self.figurine_id = "fig-race"
+                self.mode = "dialogue"
+                self.broker_profile = "local"
+                self.env = "development"
+                self.broker_host = "localhost"
+                self.broker_port = 1883
+                self.broker_tls = False
+                self.is_connected = True
+                self.is_simulating = True
+
+            def stop_current_session(self):
+                stop_requested.set()
+
+            def run_session(self, wav_path, audio_id="", speed=0, subscribe_response=False):
+                new_run_started.set()
+                return mqtt_bridge.SimulationResult(
+                    session_id="real-session-2",
+                    device_id=self.device_id,
+                    figurine_id=self.figurine_id,
+                    mode=self.mode,
+                    audio_id=audio_id,
+                    status="completed",
+                    audio_duration_sec=0.2,
+                    total_chunks=1,
+                    send_duration_sec=0.2,
+                    started_at=time.time(),
+                    completed_at=time.time(),
+                )
+
+        def _old_worker():
+            stop_requested.wait(timeout=5)
+            allow_old_exit.wait(timeout=5)
+            fake_dev.is_simulating = False
+
+        fake_dev = FakeDevice()
+        mgr = mqtt_bridge.SimulationManager()
+        mgr._devices["dev-race"] = fake_dev
+        old_thread = threading.Thread(target=_old_worker, daemon=True, name="dev-race-old")
+        old_thread.start()
+        mgr._threads["dev-race"] = old_thread
+
+        wav_path = _make_wav(tmp_path, duration_sec=0.2)
+
+        result_holder = {}
+
+        def _call_start():
+            result_holder["session_id"] = mgr.start_simulation(
+                device_id="dev-race",
+                figurine_id="fig-race",
+                mode="dialogue",
+                audio_id="audio-race",
+                resolve_audio=lambda _audio_id: wav_path,
+                mqtt_profile="local",
+                mqtt_env="development",
+                mqtt_host="localhost",
+                mqtt_port=1883,
+                mqtt_tls=False,
+            )
+            call_finished.set()
+
+        caller = threading.Thread(target=_call_start, daemon=True, name="dev-race-start")
+        caller.start()
+
+        assert stop_requested.wait(timeout=2)
+        time.sleep(0.2)
+        assert not new_run_started.is_set()
+        assert not call_finished.is_set()
+
+        allow_old_exit.set()
+        assert call_finished.wait(timeout=5)
+        caller.join(timeout=5)
+        assert not caller.is_alive()
+        assert new_run_started.wait(timeout=2)
+
+        session_id = result_holder["session_id"]
+        result = mgr.get_result(session_id)
+        assert result is not None
+        assert result["status"] == "completed"
 
 
 # ══════════════════════════════════════════════════════════

@@ -12,5 +12,5 @@ echo "=== bot_mqtt process env ==="
 cat /proc/239277/environ 2>/dev/null | tr '\0' '\n' | head -30
 
 echo ""
-echo "=== bot_simple_mqtt process env ==="
+echo "=== bot_mqtt process env ==="
 cat /proc/101242/environ 2>/dev/null | tr '\0' '\n' | head -30
