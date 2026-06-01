@@ -1540,9 +1540,8 @@ def start_device_simulation(req: SimulateRequest):
             mqtt_tls_insecure=req.mqtt_tls_insecure,
         )
 
-        result = simulation_manager.get_result(session_id)
-        if result:
-            result["vad_bypassed"] = req.bypass_vad
+        if req.bypass_vad:
+            simulation_manager._vad_bypassed[session_id] = True
 
     except ValueError as exc:
         return {"error": str(exc)}

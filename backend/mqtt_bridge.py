@@ -978,6 +978,7 @@ class SimulationManager:
         self.event_bus = SimulationEventBus()
         self._results: dict[str, dict] = {}
         self._session_aliases: dict[str, str] = {}
+        self._vad_bypassed: dict[str, bool] = {}
         self._load_history()
         self._start_cleanup_thread()
 
@@ -1445,7 +1446,10 @@ class SimulationManager:
     def get_result(self, session_id: str) -> dict | None:
         resolved_session_id = self._resolve_session_id(session_id)
         with self._lock:
-            return self._results.get(resolved_session_id) or self._results.get(session_id)
+            result = self._results.get(resolved_session_id) or self._results.get(session_id)
+        if result is not None:
+            result["vad_bypassed"] = self._vad_bypassed.get(resolved_session_id, False)
+        return result
 
     def get_history(self, limit: int = 50, offset: int = 0) -> list[dict]:
         with self._lock:
@@ -1454,6 +1458,9 @@ class SimulationManager:
                 key=lambda r: r.get("started_at", 0),
                 reverse=True,
             )
+        for r in all_results:
+            sid = r.get("session_id", "")
+            r["vad_bypassed"] = self._vad_bypassed.get(sid, False)
         return all_results[offset:offset + limit]
 
     def get_history_count(self) -> int:
