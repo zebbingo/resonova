@@ -228,7 +228,7 @@ def _normalize_audio_path(path: str) -> Path:
     return p
 
 # ── 前端静态文件 ────────────────────────────────────────────
-_FRONTEND_DIST = Path(__file__).resolve().parent.parent.parent / "stt-test-tool-frontend" / "dist"
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if _FRONTEND_DIST.exists():
     app.mount("/assets", StaticFiles(directory=str(_FRONTEND_DIST / "assets")), name="frontend_assets")
     logger.info(f"Frontend dist mounted: {_FRONTEND_DIST}")

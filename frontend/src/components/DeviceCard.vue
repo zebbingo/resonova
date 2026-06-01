@@ -189,6 +189,7 @@ const {
   connectDevice,
   disconnectDevice,
   startSimulation,
+  sendTurn,
   stopSimulation,
 } = useMQTTSimulation()
 
@@ -222,6 +223,30 @@ const showOtaPanel = ref(false)
 const showConfigPanel = ref(false)
 
 const waveformTurnId = ref<string | null>(null)
+
+const latestSessionStatus = computed(() => {
+  const latest = [...logs.value].reverse().find(log => log.type === 'session_status')
+  const status = latest?.payload?.status || (state.sessionId ? 'active' : 'idle')
+  return String(status)
+})
+
+const latestIntroStatus = computed(() => {
+  const latestStatus = [...logs.value].reverse().find(log => {
+    const status = log.type === 'session_status' ? String(log.payload?.status || '') : ''
+    return status.startsWith('intro_')
+  })
+  const status = String(latestStatus?.payload?.status || '')
+  if (status === 'intro_complete') return 'completed'
+  if (status === 'intro_timeout') return 'timeout'
+  if (status === 'intro_playing') return 'playing'
+
+  const introEvents = [...logs.value].reverse().filter(log => log.type === 'intro_start' || log.type === 'intro_end')
+  const last = introEvents[0]
+  if (!last) return 'waiting'
+  return last.type === 'intro_end' ? 'completed' : 'playing'
+})
+
+const canSendTurn = computed(() => !!getCurrentAudioId() && !!state.sessionId && (isConnected.value || isSimulating.value))
 
 interface FigurineWithMediaCount extends FigurineConfig {
   story_count?: number
@@ -469,6 +494,35 @@ async function handleStart() {
     if (recent) saveRecentAudio(recent)
   } catch (err: any) {
     failStep('session', 'MQTT 会话启动', err.message || '启动失败')
+  }
+}
+
+async function handleSendTurn() {
+  const audioId = getCurrentAudioId()
+  if (!audioId) {
+    alert('请先选择音频')
+    return
+  }
+  if (!state.sessionId) {
+    alert('请先等待会话建立完成')
+    return
+  }
+
+  const phase = flowStore.phases.find(p => p.id === 'session')
+  if (phase) phase.expanded = true
+
+  addStep('session', '手动发送一轮', `audio_id: ${audioId}`)
+
+  try {
+    const resp = await sendTurn(audioId)
+    const nextSessionId = resp?.session_id || state.sessionId
+    if (nextSessionId) {
+      completeStep('session', '手动发送一轮', `Session ID: ${nextSessionId}`)
+    } else {
+      completeStep('session', '手动发送一轮')
+    }
+  } catch (err: any) {
+    failStep('session', '手动发送一轮', err.message || '发送失败')
   }
 }
 
@@ -730,6 +784,15 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
       </div>
       
       <div class="header-right">
+        <button
+          v-if="isConnected || isSimulating"
+          class="btn-icon info-btn"
+          :class="{ active: showDeviceInfo }"
+          @click="showDeviceInfo = !showDeviceInfo"
+          title="会话信息"
+        >
+          i
+        </button>
         <button v-if="state.heartbeatActive" class="btn-icon heartbeat-btn" :class="{ alive: heartbeatAlive }" @click="showDeviceInfo = !showDeviceInfo" title="心跳监控">
           {{ heartbeatAlive ? '' : '' }}
         </button>
@@ -740,10 +803,20 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
     </div>
 
     <!-- 设备详情折叠区 -->
-    <div v-if="showDeviceInfo && isSimulating" class="device-info-panel">
+    <div v-if="showDeviceInfo && (isSimulating || isConnected)" class="device-info-panel">
       <div class="info-row">
         <span class="info-label">Session</span>
         <span class="info-value mono">{{ state.sessionId || '-' }}</span>
+        <span class="info-label" style="margin-left:12px">状态</span>
+        <span class="info-value">{{ latestSessionStatus }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Intro</span>
+        <span class="info-value">{{ latestIntroStatus }}</span>
+        <span class="info-label" style="margin-left:12px">Heartbeat</span>
+        <span class="info-value" :class="{ 'text-green': heartbeatAlive, 'text-yellow': !heartbeatAlive }">
+          {{ state.heartbeatActive ? 'active' : 'off' }}
+        </span>
       </div>
       <div class="info-row">
         <span class="info-label">Turn</span>
@@ -1014,10 +1087,12 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
       </template>
       <template v-else-if="isConnected && !isSimulating">
         <button class="btn-start" :disabled="!getCurrentAudioId()" @click="handleStart">▶ Start</button>
+        <button class="btn-send-turn" :disabled="!canSendTurn" @click="handleSendTurn">📣 Send Turn</button>
         <button class="btn-disconnect" @click="handleDisconnect">🔲 断开设备</button>
       </template>
       <template v-else-if="isSimulating">
         <button class="btn-stop" @click="handleStop">🔶 停止模拟</button>
+        <button class="btn-send-turn" :disabled="!canSendTurn" @click="handleSendTurn">📣 Send Turn</button>
       </template>
     </div>
 
@@ -1155,6 +1230,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
 }
 
 .btn-icon:hover { background: var(--surface2); }
+.btn-icon.active { background: var(--surface2); color: var(--accent); }
 
 .heartbeat-btn.alive { animation: hb-pulse 2s infinite; }
 
@@ -1637,7 +1713,8 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
 .btn-stop,
 .btn-restart,
 .btn-connect,
-.btn-disconnect {
+.btn-disconnect,
+.btn-send-turn {
   width: 100%;
   padding: 12px;
   border: none;
@@ -1662,6 +1739,13 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
 .btn-connect { background: #4a90d9; color: #fff; }
 .btn-connect:hover:not(:disabled) { background: #3a7bc8; }
 .btn-connect:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-send-turn {
+  background: linear-gradient(135deg, #f59e0b, #f97316);
+  color: #fff;
+}
+.btn-send-turn:hover:not(:disabled) { background: linear-gradient(135deg, #f59e0b, #ea580c); }
+.btn-send-turn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .btn-disconnect {
   background: transparent;

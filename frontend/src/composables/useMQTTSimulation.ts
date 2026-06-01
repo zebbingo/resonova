@@ -420,6 +420,26 @@ export function useMQTTSimulation() {
     }
   }
 
+  async function sendTurn(audioId: string) {
+    if (!_deviceId) {
+      throw new Error('Device is not connected')
+    }
+    if (!audioId) {
+      throw new Error('audioId is required')
+    }
+
+    const resp = await axios.post('/api/device/send-turn', {
+      device_id: _deviceId,
+      audio_id: audioId,
+    })
+
+    const sessionId = resp?.data?.session_id
+    if (sessionId && !state.sessionId) {
+      state.sessionId = sessionId
+    }
+    return resp.data
+  }
+
   function _handleWsMessage(data: any) {
     const msgType: string = data.type || ''
     const direction: 'up' | 'down' = data.direction || 'down'
@@ -490,6 +510,17 @@ export function useMQTTSimulation() {
         break
 
       case 'session_status':
+        if (payload?.session_id && payload.session_id !== state.sessionId) {
+          state.sessionId = payload.session_id
+        }
+        if (payload?.status === 'error') {
+          state.errorMessage = payload?.error || state.errorMessage
+          state.status = 'error'
+        } else if (payload?.status === 'completed' || payload?.status === 'session_closed') {
+          state.status = isConnected.value ? 'active' : 'idle'
+        } else if (payload?.status === 'turn_completed' || payload?.status === 'intro_complete' || payload?.status === 'intro_timeout' || payload?.status === 'active') {
+          state.status = 'active'
+        }
         addLog('down', 'Session/Status', payload, 'session_status')
         break
 
@@ -720,6 +751,7 @@ export function useMQTTSimulation() {
     connectDevice,
     disconnectDevice,
     startSimulation,
+    sendTurn,
     stopSimulation,
     clearLogs,
     onDeviceEvicted,
