@@ -132,14 +132,23 @@ bot_mqtt 中始终得不到 STT 响应。深入诊断后确认：
 
 ---
 
-## 六、剩余工作
+## 六、剩余工作 — 全部已完成 ✅
 
-| 优先级 | 事项 | 说明 |
-|--------|------|------|
-| P2 | 前端 `node_modules` | 已合并 frontend/ 但未 `pnpm install` |
-| P3 | .venv WSL 重启丢失 | `/mnt/d/` 挂载导致文件残留 |
-| P4 | 自动 profile 切换 | 当前 `bypass_vad` 只标记不自动切换 |
-| P5 | `cleanup_orphan_sessions` 清理 `_vad_bypassed` | 非紧急，逻辑上 `_results` 清理时 `_vad_bypassed` 残 |
+| 优先级 | 事项 | 说明 | 状态 |
+|--------|------|------|------|
+| P2 | 前端 `node_modules` | 已合并 frontend/、pnpm 依赖完整 (59 packages) | ✅ **已完成** |
+| P3 | .venv WSL 重启丢失 | 已迁移到 `/home/administrator/.cache/resonova-venv/` + symlink，新增 `ensure-venv.sh` 自动恢复 | ✅ **已完成** |
+| P4 | 自动 profile 切换 | 新增 `POST /api/device/simulate-with-vad-retry` 端点，自动检测 VAD 阻塞 → 切换 profile → 重启 chatbot → 重试 → 恢复 | ✅ **已完成** |
+| P5 | `cleanup_orphan_sessions` 清理 `_vad_bypassed` | `cleanup_orphan_sessions()` 现在同步清理 `_vad_bypassed` | ✅ **已完成** |
+
+### 本次新增（commit `08ac37b` `69f7586`）
+
+| 文件 | 改动 | 说明 |
+|------|------|------|
+| `backend/mqtt_bridge.py` | +1 | `cleanup_orphan_sessions` 追加 `_vad_bypassed.pop(sid)` |
+| `backend/server.py` | +138 | `_switch_mqtt_profile()` + `simulate-with-vad-retry` 端点 |
+| `backend/scripts/ensure-venv.sh` | 新文件 | .venv WSL 原生持久化脚本 |
+| `.gitignore` | +1 | `backend/.venv` (symlink)|
 
 ---
 
