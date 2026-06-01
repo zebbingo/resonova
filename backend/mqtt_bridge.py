@@ -1430,6 +1430,7 @@ class SimulationManager:
                     status = r.get("status", "")
                     if status in ("pending",):
                         r["status"] = "orphan_cleaned"
+                        self._vad_bypassed.pop(sid, None)
                         count += 1
         if count:
             logger.warning("Cleaned %d orphan simulation results", count)

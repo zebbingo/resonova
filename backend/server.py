@@ -1043,6 +1043,7 @@ class SimulateRequest(BaseModel):
     mqtt_tls_client_key: str | None = None
     mqtt_tls_insecure: bool | None = None
     bypass_vad: bool = False
+    auto_switch_vad_profile: bool = False
 
 
 class SimulateResponse(BaseModel):
@@ -1558,6 +1559,146 @@ def start_device_simulation(req: SimulateRequest):
         "bypass_vad": req.bypass_vad,
     }
     return resp
+
+
+def _switch_mqtt_profile(target_profile: str) -> dict:
+    """Switch the mqtt profile group and restart affected services.
+
+    Returns the previous profile name so it can be restored later.
+    """
+    group = "mqtt"
+    profiles = _load_active_profiles()
+    previous = profiles.get(group, "local")
+
+    if previous == target_profile:
+        return {"previous": previous, "switched": False}
+
+    group_def = _PROFILE_GROUPS.get(group)
+    if not group_def or target_profile not in group_def["available"]:
+        return {"previous": previous, "switched": False, "error": f"invalid profile: {target_profile}"}
+
+    profiles[group] = target_profile
+    _save_active_profiles(profiles)
+
+    restart_suites = set()
+    for sid, g in _SERVICE_PROFILE_GROUP.items():
+        if g == group:
+            for suite_name in _SERVICE_INFO[sid]["suites"]:
+                restart_suites.add(suite_name)
+
+    errors = []
+    for suite in restart_suites:
+        stop_result = _run_svc_script("stop", suite)
+        if not stop_result.get("success"):
+            errors.append(f"stop {suite} failed: {stop_result.get('stderr', '')[:100]}")
+        start_result = _run_svc_script("start", suite)
+        if not start_result.get("success"):
+            errors.append(f"start {suite} failed: {start_result.get('stderr', '')[:100]}")
+
+    return {"previous": previous, "switched": True, "errors": errors}
+
+
+@app.post("/api/device/simulate-with-vad-retry")
+def start_device_simulation_with_vad_retry(req: SimulateRequest):
+    """启动 MQTT 设备模拟，自动检测 VAD 阻塞并重试。
+
+    流程：
+    1. 先以当前 profile 运行模拟
+    2. 等待结果（最长 wait_seconds）
+    3. 如果检测到 VAD 阻塞（stt_text 空 + tts 无响应）：
+       a. 切换 MQTT profile 到 local（EOS 模式，VAD off）
+       b. 重启 chatbot 服务
+       c. 以 bypass_vad=true 重试
+       d. 恢复原始 profile + 重启服务
+    4. 返回两次运行的结果
+    """
+    if not req.audio_id:
+        return {"error": "audio_id is required"}
+
+    result = {"first_run": None, "second_run": None, "vad_auto_retried": False}
+
+    # First run with current profile
+    session_id = simulation_manager.start_simulation(
+        device_id=req.device_id,
+        figurine_id=req.figurine_id,
+        mode=req.mode,
+        audio_id=req.audio_id,
+        resolve_audio=_resolve_audio_for_sim,
+        nfc_id=req.nfc_id,
+        subscribe_response=req.subscribe_response,
+        speed=req.speed,
+        mqtt_profile=req.mqtt_profile,
+        mqtt_env=req.mqtt_env,
+        mqtt_host=req.mqtt_host,
+        mqtt_port=req.mqtt_port,
+        mqtt_tls=req.mqtt_tls,
+        mqtt_tls_ca_cert=req.mqtt_tls_ca_cert,
+        mqtt_tls_client_cert=req.mqtt_tls_client_cert,
+        mqtt_tls_client_key=req.mqtt_tls_client_key,
+        mqtt_tls_insecure=req.mqtt_tls_insecure,
+    )
+    result["first_run"] = {"session_id": session_id, "status": "started"}
+
+    # Wait briefly and check for VAD blocking
+    import time
+    for _ in range(30):
+        time.sleep(1)
+        r = simulation_manager.get_result(session_id)
+        if r and r.get("status") in ("completed", "error"):
+            stt = (r.get("stt_text") or "").strip()
+            tts = r.get("tts_response_count", 0)
+            result["first_run"]["status"] = r.get("status")
+            if not stt and not tts:
+                result["vad_auto_retried"] = True
+                break
+            result["first_run"]["stt_text"] = stt
+            result["first_run"]["tts_chunks"] = r.get("tts_chunks")
+            return result
+
+    if not result["vad_auto_retried"]:
+        return result
+
+    # VAD blocked — switch to EOS mode and retry
+    switch_result = _switch_mqtt_profile("local")
+    if switch_result.get("errors"):
+        return {"error": "profile switch failed", "detail": switch_result["errors"]}
+
+    try:
+        req.bypass_vad = True
+        session_id2 = simulation_manager.start_simulation(
+            device_id=req.device_id,
+            figurine_id=req.figurine_id,
+            mode=req.mode,
+            audio_id=req.audio_id,
+            resolve_audio=_resolve_audio_for_sim,
+            nfc_id=req.nfc_id,
+            subscribe_response=req.subscribe_response,
+            speed=req.speed,
+            mqtt_profile=req.mqtt_profile,
+            mqtt_env=req.mqtt_env,
+            mqtt_host=req.mqtt_host,
+            mqtt_port=req.mqtt_port,
+            mqtt_tls=req.mqtt_tls,
+            mqtt_tls_ca_cert=req.mqtt_tls_ca_cert,
+            mqtt_tls_client_cert=req.mqtt_tls_client_cert,
+            mqtt_tls_client_key=req.mqtt_tls_client_key,
+            mqtt_tls_insecure=req.mqtt_tls_insecure,
+        )
+        simulation_manager._vad_bypassed[session_id2] = True
+        result["second_run"] = {"session_id": session_id2, "status": "started", "bypass_vad": True}
+
+        for _ in range(30):
+            time.sleep(1)
+            r2 = simulation_manager.get_result(session_id2)
+            if r2 and r2.get("status") in ("completed", "error"):
+                result["second_run"]["status"] = r2.get("status")
+                result["second_run"]["stt_text"] = r2.get("stt_text", "")
+                result["second_run"]["tts_chunks"] = r2.get("tts_chunks")
+                break
+    finally:
+        _switch_mqtt_profile(switch_result.get("previous", "local"))
+
+    return result
 
 
 @app.post("/api/device/stop/{session_id}")
