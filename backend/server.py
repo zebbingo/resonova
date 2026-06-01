@@ -1042,6 +1042,7 @@ class SimulateRequest(BaseModel):
     mqtt_tls_client_cert: str | None = None
     mqtt_tls_client_key: str | None = None
     mqtt_tls_insecure: bool | None = None
+    bypass_vad: bool = False
 
 
 class SimulateResponse(BaseModel):
@@ -1511,6 +1512,9 @@ def start_device_simulation(req: SimulateRequest):
 
     后端将加载指定音频，通过真实 MQTT 协议发送到 chatbot 后端，
     模拟真实设备的会话生命周期。
+
+    如果 bypass_vad=True，模拟结果会标记 vad_bypassed，
+    前端可根据 STT 结果判断是否需要手动切换 MQTT profile。
     """
     if not req.audio_id:
         return {"error": "audio_id is required"}
@@ -1535,19 +1539,26 @@ def start_device_simulation(req: SimulateRequest):
             mqtt_tls_client_key=req.mqtt_tls_client_key,
             mqtt_tls_insecure=req.mqtt_tls_insecure,
         )
+
+        result = simulation_manager.get_result(session_id)
+        if result:
+            result["vad_bypassed"] = req.bypass_vad
+
     except ValueError as exc:
         return {"error": str(exc)}
     except Exception as exc:
         return {"error": f"启动模拟失败: {exc}"}
 
-    return {
+    resp = {
         "session_id": session_id,
         "status": "started",
         "websocket_url": f"/ws/session/{session_id}",
         "device_id": req.device_id,
         "figurine_id": req.figurine_id,
         "mode": req.mode,
+        "bypass_vad": req.bypass_vad,
     }
+    return resp
 
 
 @app.post("/api/device/stop/{session_id}")
@@ -1671,6 +1682,11 @@ def get_device_history(limit: int = 50, offset: int = 0):
     # 摘要版本（去掉详细的 backend_responses）
     summary = []
     for r in records:
+        stt_text = r.get("stt_text", "") or ""
+        vad_bypassed = r.get("vad_bypassed", False)
+        vad_blocked = False
+        if not stt_text.strip() and not vad_bypassed and r.get("tts_response_count", 0) == 0:
+            vad_blocked = True
         summary.append({
             "session_id": r.get("session_id"),
             "device_id": r.get("device_id"),
@@ -1681,11 +1697,13 @@ def get_device_history(limit: int = 50, offset: int = 0):
             "audio_duration_sec": r.get("audio_duration_sec"),
             "total_chunks": r.get("total_chunks"),
             "send_duration_sec": r.get("send_duration_sec"),
-            "stt_text": r.get("stt_text", "")[:100],
+            "stt_text": stt_text[:100],
             "tts_response_count": r.get("tts_response_count"),
             "tts_chunks": r.get("tts_chunks"),
             "started_at": r.get("started_at"),
             "error": r.get("error", ""),
+            "vad_bypassed": vad_bypassed,
+            "vad_blocked": vad_blocked,
         })
 
     return {
@@ -1719,6 +1737,7 @@ def compare_device_simulations(session_ids: str = ""):
         result = simulation_manager.get_result(sid)
         if result is None:
             continue
+        stt_text = result.get("stt_text", "") or ""
         rows.append({
             "session_id": sid,
             "device_id": result.get("device_id"),
@@ -1726,12 +1745,14 @@ def compare_device_simulations(session_ids: str = ""):
             "mode": result.get("mode"),
             "audio_duration_sec": result.get("audio_duration_sec"),
             "send_duration_sec": result.get("send_duration_sec"),
-            "stt_text": result.get("stt_text", ""),
+            "stt_text": stt_text,
             "stt_language": result.get("stt_language", ""),
             "tts_response_count": result.get("tts_response_count"),
             "tts_chunks": result.get("tts_chunks"),
             "status": result.get("status"),
             "error": result.get("error", ""),
+            "vad_bypassed": result.get("vad_bypassed", False),
+            "vad_blocked": (not stt_text and not result.get("vad_bypassed") and not result.get("tts_response_count")),
         })
 
     return {
@@ -3214,6 +3235,7 @@ _SERVICE_ANNOTATIONS = {
             {"key": "MQTT_ENV", "description": "MQTT 环境标识", "default": "prod"},
             {"key": "MQTT_HOST", "description": "MQTT Broker 地址", "default": "127.0.0.1"},
             {"key": "MQTT_PORT", "description": "MQTT Broker 端口", "default": "1883"},
+            {"key": "CHATBOT_MQTT_HANDLE_VAD_ON_SERVER", "description": "服务端 VAD 开关；本地测试默认关闭以便模拟音频走 EOS 触发", "default": "false"},
         ],
     },
 }
@@ -3243,6 +3265,7 @@ _PROFILE_GROUPS = {
                     "CHATBOT_MQTT_ENV": "prod",
                     "CHATBOT_MQTT_HOST": "127.0.0.1",
                     "CHATBOT_MQTT_PORT": "1883",
+                    "CHATBOT_MQTT_HANDLE_VAD_ON_SERVER": "false",
                 },
             },
             "cloud": {
@@ -3252,6 +3275,7 @@ _PROFILE_GROUPS = {
                     "CHATBOT_MQTT_ENV": "production",
                     "CHATBOT_MQTT_HOST": "<endpoint>.iot.eu-west-2.amazonaws.com",
                     "CHATBOT_MQTT_PORT": "8883",
+                    "CHATBOT_MQTT_HANDLE_VAD_ON_SERVER": "true",
                 },
             },
         },

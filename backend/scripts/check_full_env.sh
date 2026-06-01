@@ -13,4 +13,4 @@ cat /proc/239277/environ 2>/dev/null | tr '\0' '\n' | head -30
 
 echo ""
 echo "=== bot_mqtt process env ==="
-cat /proc/101242/environ 2>/dev/null | tr '\0' '\n' | head -30
+cat /proc/101242/environ 2>/dev/null | tr '\0' '\n' | grep -E 'MQTT_ENV|MQTT_HANDLE_VAD_ON_SERVER|MQTT_HOST|MQTT_PORT|DEVICE_ID|BROKER|TOY_ID' | head -30

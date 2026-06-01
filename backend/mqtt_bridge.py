@@ -84,6 +84,8 @@ class SimulationResult:
     cue_count: int = 0
     commands_received: int = 0
     stt_texts: list = field(default_factory=list)
+    vad_bypassed: bool = False
+    vad_blocked_warning: str = ""
 
 
 def _resolve_mqtt_host() -> str:

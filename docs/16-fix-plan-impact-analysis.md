@@ -98,12 +98,10 @@ if old_thread and old_thread.is_alive():
 
 #### 方案 A：环境变量绕过（最快，5 分钟生效）⭐ 已验证通过
 ```bash
-# 重启 bot_mqtt 前设置
+# 如果不是通过 start-local-dev.sh 启动，可手工覆盖
 export MQTT_HANDLE_VAD_ON_SERVER=false
-# 同时确保响应分发开启
-export MQTT_SHOULD_SEND_RESPONSE_CHUNK=true
 ```
-**原理：** 关闭 VAD 模式后，EOS 消息直接触发 `_finalize_turn_input` → 调用 STT
+**原理：** 关闭 VAD 模式后，EOS 消息直接触发 `_finalize_turn_input` → 调用 STT。`start-local-dev.sh` 现在会为 `mqtt_worker` 默认注入这项配置。
 **优点：** 零代码改动，立即验证管道是否正常
 **缺点：** Resonova也需要测试 VAD，不能永远 bypass
 **验证：** 2026-05-29 16:35 实测通过（STT: "Can you speak Chinese." → LLM → TTS: 319 chunks）
@@ -135,8 +133,8 @@ export MQTT_SHOULD_SEND_RESPONSE_CHUNK=true
 | C: 代码修复 | 逻辑改动需充分测试 | 加单元测试 + 全链路重测 |
 
 ### ✅ 验证方式
-1. 设置 `MQTT_HANDLE_VAD_ON_SERVER=false`
-2. 重启 bot_mqtt
+1. 确认 `mqtt_worker` 通过 `start-local-dev.sh` 启动
+2. 如需手工覆盖，再设置 `MQTT_HANDLE_VAD_ON_SERVER=false`
 3. 跑一次全链路模拟
 4. 检查 result：`stt_text` 不应为空，`tts_response_count > 0`
 
@@ -233,7 +231,7 @@ def _run(self, ...):
 | 步骤 | 操作 | 优先级 |
 |:-----|:-----|:-------|
 | 1 | 代码级 VAD 修复（fallback 触发 STT） | P1 |
-| 2 | 增加环境变量配置到 start-local-dev.sh | P1 |
+| 2 | 增加环境变量配置到 start-local-dev.sh | 已完成 |
 | 3 | 增加模拟错误时 API 返回 error 字段 | P1 |
 | 4 | 前端增加模拟进度可视化 | P2 |
 

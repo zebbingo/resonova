@@ -98,8 +98,8 @@ Resonova提供了完整的服务生命周期管理 API 和 UI，支持启动/停
 
 | Profile | Broker | 环境变量 |
 |---------|--------|---------|
-| **local** | WSL NanoMQ (127.0.0.1:1883，⚠️ Mosquitto 已弃用） | `CHATBOT_MQTT_ENV=prod`, `CHATBOT_MQTT_HOST=127.0.0.1`, `CHATBOT_MQTT_PORT=1883` |
-| **cloud** | AWS IoT Core (eu-west-2:8883) | `CHATBOT_MQTT_ENV=production`, `CHATBOT_MQTT_HOST=<endpoint>.iot.eu-west-2.amazonaws.com`, `CHATBOT_MQTT_PORT=8883` |
+| **local** | WSL NanoMQ (127.0.0.1:1883，⚠️ Mosquitto 已弃用） | `CHATBOT_MQTT_ENV=prod`, `CHATBOT_MQTT_HOST=127.0.0.1`, `CHATBOT_MQTT_PORT=1883`, `CHATBOT_MQTT_HANDLE_VAD_ON_SERVER=false` |
+| **cloud** | AWS IoT Core (eu-west-2:8883) | `CHATBOT_MQTT_ENV=production`, `CHATBOT_MQTT_HOST=<endpoint>.iot.eu-west-2.amazonaws.com`, `CHATBOT_MQTT_PORT=8883`, `CHATBOT_MQTT_HANDLE_VAD_ON_SERVER=true` |
 
 ---
 
