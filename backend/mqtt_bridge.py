@@ -1215,7 +1215,7 @@ class SimulationManager:
         preliminary_id = secrets.token_urlsafe(9)[:12]
         self.event_bus.create_queue(preliminary_id)
 
-        session_id_holder = {"value": preliminary_id, "ready": threading.Event()}
+        session_id_holder = {"value": preliminary_id, "ready": threading.Event(), "error": None}
 
         def _run():
             try:
@@ -1228,6 +1228,7 @@ class SimulationManager:
                 session_id_holder["ready"].set()
                 self._save_result(result)
             except Exception as exc:
+                session_id_holder["error"] = str(exc)
                 session_id_holder["ready"].set()
                 logger.exception("User turn failed: %s", exc)
             finally:
@@ -1242,6 +1243,10 @@ class SimulationManager:
             self._threads[device_id] = thread
 
         session_id_holder["ready"].wait(timeout=15)
+        error_msg = session_id_holder.get("error")
+        if error_msg:
+            self.event_bus.remove_queue(preliminary_id)
+            return {"error": f"发送音频失败: {error_msg}"}
         real_sid = session_id_holder["value"]
         if real_sid and real_sid != preliminary_id:
             self.event_bus.alias_queue(preliminary_id, real_sid)
@@ -1280,7 +1285,7 @@ class SimulationManager:
         )
         self._save_result(placeholder)
 
-        session_id_holder = {"value": preliminary_id, "ready": threading.Event()}
+        session_id_holder = {"value": preliminary_id, "ready": threading.Event(), "error": None}
 
         def _run():
             try:
@@ -1298,7 +1303,13 @@ class SimulationManager:
                 session_id_holder["ready"].set()
                 self._save_result(result)
             except Exception as exc:
+                session_id_holder["error"] = str(exc)
                 session_id_holder["ready"].set()
+                # Update placeholder with error status so caller can query result
+                placeholder.status = "error"
+                placeholder.error = str(exc)
+                placeholder.completed_at = time.time()
+                self._save_result(placeholder)
                 logger.exception("Simulation failed: %s", exc)
             finally:
                 with self._lock:
@@ -1312,6 +1323,10 @@ class SimulationManager:
 
         session_id_holder["ready"].wait(timeout=15)
         real_sid = session_id_holder["value"]
+        # When error occurs and no real session_id was assigned, alias to preliminary_id
+        # so the caller can find the error result via the returned preliminary_id
+        if session_id_holder.get("error") and real_sid == preliminary_id:
+            self._session_aliases[preliminary_id] = preliminary_id
         if real_sid and real_sid != preliminary_id:
             self.event_bus.alias_queue(preliminary_id, real_sid)
         return preliminary_id
