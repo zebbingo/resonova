@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import type { AudioItem, FigurineConfig, StoryItem, MusicItem } from '../types'
 import { audioUrl, mediaStreamUrl, fetchFigurines, fetchStories, fetchMusic, fetchFigurineTTSAudios, generateTTS, fetchGeneratedVoices, generatedAudioUrl, translateText } from '../api'
@@ -292,11 +292,14 @@ const liveFeedback = computed(() => {
     }).format(state.lastEventAt)
     : ''
 
-  const parts = [state.lastEventSummary || (state.status === 'error' ? state.errorMessage || '流程异常' : '等待流程更新')]
-  if (state.lastSessionStatus) parts.push(`阶段: ${state.lastSessionStatus}`)
+  const parts = []
+  if (state.currentTurn > 0) parts.push(`Turn #${state.currentTurn}`)
+  if (state.lastEventSummary) parts.push(state.lastEventSummary)
+  if (!parts.length) parts.push(state.status === 'error' ? state.errorMessage || 'Flow error' : 'Waiting for turn updates')
+  if (state.lastSessionStatus) parts.push(`Session: ${state.lastSessionStatus}`)
   if (state.lastSttText) parts.push(`STT: ${state.lastSttText}`)
-  if (state.lastReplyText) parts.push(`回复: ${state.lastReplyText}`)
-  if (stamp) parts.push(`更新时间: ${stamp}`)
+  if (state.lastReplyText) parts.push(`Reply: ${state.lastReplyText}`)
+  if (stamp) parts.push(`Updated: ${stamp}`)
   return parts
 })
 
@@ -953,10 +956,14 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
     <!-- 角色选择 -->
     <div v-if="(isSimulating || isConnected) && (state.lastEventSummary || state.lastSessionStatus || state.lastSttText || state.lastReplyText)" class="live-feedback">
       <div class="live-feedback-head">
-        <span class="live-feedback-title">实时反馈</span>
+        <span class="live-feedback-title">Turn 反馈</span>
         <span class="live-feedback-badge" :class="state.status" :title="state.status">{{ formatSessionStatus(state.status) }}</span>
       </div>
       <div class="live-feedback-main">{{ liveFeedback[0] }}</div>
+      <div class="live-feedback-line">
+        <span class="live-feedback-label">Turn</span>
+        <span class="mono">#{{ state.currentTurn || '-' }} · {{ state.lastSessionStatus || sessionStatusLabel }}</span>
+      </div>
       <div class="live-feedback-line">
         <span class="live-feedback-label">进度</span>
         <span class="mono">会话: {{ sessionStatusLabel }} · Intro: {{ introStatusLabel }}</span>
@@ -2137,4 +2144,5 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
 
 .btn-close:hover { border-color: var(--accent); }
 </style>
+
 

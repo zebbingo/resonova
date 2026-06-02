@@ -130,6 +130,50 @@ function cmdBadge(cmd: CommandInfo): string {
   return '📩'
 }
 
+function turnStateLabel(s: TurnInfo['state']): string {
+  const map: Record<string, string> = {
+    capturing: 'capturing',
+    uploading: 'uploading',
+    thinking: 'thinking',
+    playing: 'playing',
+    draining: 'draining',
+    done: 'done',
+    aborted: 'aborted',
+  }
+  return map[s] || s
+}
+
+function turnTypeLabel(t: TurnInfo['type']): string {
+  const map: Record<string, string> = {
+    user: 'user turn',
+    tts: 'system audio',
+    cue: 'cue',
+    command: 'command',
+  }
+  return map[t] || t
+}
+
+const currentTurnSummary = computed(() => {
+  const turns = entry.value?.activeTurns || []
+  const current = [...turns].reverse().find(turn => turn.state !== 'done' && turn.state !== 'aborted') || [...turns].reverse()[0]
+
+  if (!current) {
+    return `Turn #${entry.value?.currentTurn ?? 0} · waiting`
+  }
+
+  const parts = [
+    `Turn #${current.turnId}`,
+    turnTypeLabel(current.type),
+    turnStateLabel(current.state),
+  ]
+
+  if (current.chunksSent) parts.push(`${current.chunksSent} up`)
+  if (current.chunksReceived) parts.push(`${current.chunksReceived} down`)
+  if (current.sttText) parts.push(`STT: ${current.sttText.slice(0, 40)}`)
+
+  return parts.join(' · ')
+})
+
 const timelineRef = ref<HTMLElement | null>(null)
 watch(
   () => flowStore.phases.map(p => p.steps.length),
@@ -191,6 +235,10 @@ watch(
           {{ entry!.status === 'idle' ? '空闲' : entry!.status === 'connecting' ? '连接中' : entry!.status === 'active' ? '活跃' : entry!.status === 'capturing' ? '录音中' : entry!.status === 'playing' ? '播放中' : entry!.status === 'completed' ? '已完成' : entry!.status === 'error' ? '错误' : '未知' }}
         </span>
       </div>
+    </div>
+
+    <div v-if="hasSimulation && currentTurnSummary" class="turn-summary">
+      {{ currentTurnSummary }}
     </div>
 
     <div v-if="hasSimulation && flowSummary" class="flow-summary">
@@ -453,6 +501,18 @@ watch(
   color: var(--text2);
   font-size: 0.78rem;
   line-height: 1.5;
+}
+
+.turn-summary {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid rgba(46, 204, 113, 0.24);
+  border-radius: 8px;
+  background: rgba(46, 204, 113, 0.08);
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.5;
+  font-weight: 600;
 }
 
 .device-badge {

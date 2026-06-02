@@ -39,9 +39,9 @@ function onReuseParams() {
 <template>
   <div class="app">
     <header class="topbar">
-      <h1>VoicePipe</h1>
+      <h1>Resonova</h1>
       <p class="subtitle">
-        语音管道测试平台 · STT / LLM / TTS 全链路 · MQTT 多设备模拟 · 后端: 192.168.52.134:8765
+        语音交互测试平台 · STT / LLM / TTS 全链路 · MQTT 多设备模拟 · 后端: localhost:8765
       </p>
     </header>
 

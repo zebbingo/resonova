@@ -39,6 +39,10 @@ function getDirectionIcon(direction: 'up' | 'down'): string {
   return direction === 'up' ? 'UP' : 'DOWN'
 }
 
+function getTurnLabel(turnId?: string): string {
+  return turnId ? `T${turnId}` : 'SESSION'
+}
+
 function truncatePayload(payload: any): string {
   if (!payload) return ''
   const str = typeof payload === 'string' ? payload : JSON.stringify(payload)
@@ -49,12 +53,12 @@ function truncatePayload(payload: any): string {
 <template>
   <div class="session-log">
     <div class="log-header">
-      <h3>Session Log</h3>
-      <span class="log-count">{{ logs.length }} messages</span>
+      <h3>Turn Log</h3>
+      <span class="log-count">{{ logs.length }} events</span>
     </div>
 
     <div v-if="logs.length === 0" class="empty-log">
-      No logs yet. Start the device to see MQTT messages.
+      No turn events yet. Start the device to see MQTT messages.
     </div>
 
     <div v-else class="log-list">
@@ -74,6 +78,10 @@ function truncatePayload(payload: any): string {
 
         <div class="log-type">
           {{ getTypeLabel(log.type) }}
+        </div>
+
+        <div class="log-turn">
+          {{ getTurnLabel(log.turnId) }}
         </div>
 
         <div class="log-topic">
@@ -137,7 +145,7 @@ function truncatePayload(payload: any): string {
 
 .log-item {
   display: grid;
-  grid-template-columns: 85px 30px 80px 1fr;
+  grid-template-columns: 85px 30px 80px 70px 1fr;
   gap: 8px;
   padding: 6px 8px;
   margin-bottom: 4px;
@@ -185,6 +193,12 @@ function truncatePayload(payload: any): string {
 
 .log-type {
   font-weight: 600;
+  white-space: nowrap;
+}
+
+.log-turn {
+  color: var(--text2);
+  font-family: 'Courier New', monospace;
   white-space: nowrap;
 }
 
