@@ -38,6 +38,24 @@ export interface SttResultData {
   duration_ms?: number
 }
 
+export interface PipelineLatency {
+  stt_latency_ms: number
+  llm_latency_ms: number
+  tts_latency_ms: number
+  e2e_latency_ms: number
+  done_latency_ms: number
+  tts_chunks: number
+  tts_duration_ms: number
+}
+
+export interface ProgressInfo {
+  turn_id: string
+  chunk: number
+  total_chunks?: number
+  percent?: number
+  chunks_received?: number
+}
+
 export interface TurnInfo {
   turnId: string
   type: 'user' | 'tts' | 'cue' | 'command'
@@ -105,6 +123,12 @@ export interface DeviceSimulationState {
 
   protocolVersion: string
   fwVersion: string
+
+  // Pipeline 管道延迟指标
+  pipelineLatency: PipelineLatency
+  // 上传/下载进度
+  uploadProgress: ProgressInfo | null
+  ttsProgress: ProgressInfo | null
 }
 
 export interface SimulationConfig {
@@ -168,6 +192,10 @@ export function useMQTTSimulation() {
 
     protocolVersion: 'v1.6',
     fwVersion: '1.6.0',
+
+    pipelineLatency: { stt_latency_ms: 0, llm_latency_ms: 0, tts_latency_ms: 0, e2e_latency_ms: 0, done_latency_ms: 0, tts_chunks: 0, tts_duration_ms: 0 },
+    uploadProgress: null,
+    ttsProgress: null,
   })
 
   const logs = ref<MQTTMessageLog[]>([])
@@ -192,7 +220,8 @@ export function useMQTTSimulation() {
       try {
         await axios.post(`/api/device/keepalive/${_deviceId}`)
       } catch {
-        // 闂傚倸鐗婇悷鈺冨垝椤栨稑绶為弶鍫亯琚?闂?闂佸憡鑹惧ù鐑筋敂椤掑嫬鐭楁い鏍ㄧ箓閸樻挳鏌￠崱妤€鈧绮径鎰煑妞ゆ牗绻冭ぐ?      }
+        // ignore keepalive errors
+      }
     }, 15_000)
   }
 
@@ -316,7 +345,7 @@ export function useMQTTSimulation() {
     } catch (error: any) {
       state.errorMessage = error.response?.data?.error || error.message
       state.status = 'error'
-      deviceSM.setError(state.errorMessage || '闁哄鏅濋崑鐐垫暜鐎涙ê绶為弶鍫亯琚?)
+      deviceSM.setError(state.errorMessage || 'Connection failed')
     } finally {
       isConnecting.value = false
     }
@@ -422,7 +451,7 @@ export function useMQTTSimulation() {
       }
 
       ws.onerror = () => {
-        state.errorMessage = 'WebSocket 闁哄鏅濋崑鐐垫暜閹绢喗鐓ユ繛鍡樺俯閸?
+        state.errorMessage = 'WebSocket error'
         state.status = 'error'
         deviceSM.setError(state.errorMessage)
       }
@@ -443,7 +472,7 @@ export function useMQTTSimulation() {
       state.errorMessage = error.response?.data?.detail || error.message
       state.status = 'error'
       isSimulating.value = false
-      deviceSM.setError(state.errorMessage || '闂佸憡鍑归崹鐗堟叏閳哄倸绶為弶鍫亯琚?)
+      deviceSM.setError(state.errorMessage || 'Simulation start failed')
     }
   }
 
@@ -460,11 +489,71 @@ export function useMQTTSimulation() {
       audio_id: audioId,
     })
 
-    const sessionId = resp?.data?.session_id
-    if (sessionId && !state.sessionId) {
+    const data = resp?.data
+    if (data?.error) {
+      throw new Error(data.error)
+    }
+    const sessionId = data?.session_id
+    if (sessionId) {
       state.sessionId = sessionId
     }
-    return resp.data
+    return data
+  }
+
+  function _handleMqttMessage(direction: 'up' | 'down', topic: string, payload: any, messageSubType: string, turnId?: string) {
+    const tid = turnId || _extractTurnIdFromTopic(topic)
+    switch (messageSubType) {
+      case 'audio_chunk':
+      case 'chunk':
+        if (direction === 'up') {
+          state.sentChunks++
+          if (tid) {
+            const turn = _findTurn(tid)
+            if (turn) turn.chunksSent++
+          }
+          addLog('up', topic, payload, 'chunk', tid)
+        } else {
+          if (tid) {
+            const turn = _findTurn(tid)
+            if (turn) turn.chunksReceived++
+          }
+          deviceSM.incrementReceivedChunks()
+          addLog('down', topic, payload, 'audio_chunk', tid)
+        }
+        break
+      case 'audio_eos':
+      case 'eos':
+        if (direction === 'up') {
+          if (tid) _upsertTurn(tid, 'user', { state: 'thinking', endTime: new Date() })
+          state.status = 'active'
+          deviceSM.transitionTo(DeviceState.WAITING)
+          addLog('up', topic, payload, 'eos', tid)
+        } else {
+          if (tid) {
+            const isCue = tid.startsWith('cue-')
+            _upsertTurn(tid, isCue ? 'cue' : 'tts', {
+              state: 'done', endTime: new Date(),
+              totalSeq: payload?.total_seq, durationMs: payload?.duration_ms,
+            })
+          }
+          state.status = 'active'
+          addLog('down', topic, payload, isCueTopic(tid) ? 'cue_eos' : 'audio_eos', tid)
+        }
+        break
+      case 'audio_done':
+      case 'done':
+        addLog('up', topic, payload, 'done', tid)
+        break
+      case 'audio_abort':
+      case 'abort':
+        if (tid) _upsertTurn(tid, _findTurn(tid)?.type || 'user', { state: 'aborted', endTime: new Date() })
+        state.status = 'active'
+        addLog(direction, topic, payload, 'abort', tid)
+        break
+      default:
+        addLog(direction, topic, payload, 'other', tid)
+        break
+    }
   }
 
   function _handleWsMessage(data: any) {
@@ -474,9 +563,10 @@ export function useMQTTSimulation() {
     const payload = data.payload || data
     const turnId: string | undefined = data.turn_id || payload?.turn_id
     const messageSubType: string = data.message_type || ''
+    const extractedTurnId = turnId || _extractTurnIdFromTopic(topic)
 
     if (msgType === 'mqtt_message') {
-      _handleMqttMessage(direction, topic, payload, messageSubType, turnId || data.short_topic)
+      _handleMqttMessage(direction, topic, payload, messageSubType, extractedTurnId)
       return
     }
 
@@ -485,19 +575,19 @@ export function useMQTTSimulation() {
         sttResult.value = data
         state.status = 'completed'
         addLog('down', 'STT Result', { text: data.text, metrics: data.metrics }, 'stt_result', turnId)
-        _setLiveTrace(`STT 闁荤姴娲ゅΛ妤呭春閸℃瑢鍋撻悷鐗堟拱闁搞劍宀搁弫?{data.text ? String(data.text).slice(0, 80) : '闂佸搫鐗滄禍锝夋儊閹达箑绀嗘い鎰╁灩閻撳倿鏌涢幇顒佸櫣妞?}`, {
-          lastSttText: data.text,
-          lastSessionStatus: 'completed',
-        })
+        _setLiveTrace(
+          data.text ? `STT result: ${String(data.text).slice(0, 80)}` : 'STT result received',
+          { lastSttText: data.text, lastSessionStatus: 'completed' },
+        )
         break
 
       case 'session_complete':
         state.status = 'completed'
         state.isOnline = false
-        // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻梺鎸庣⊕閻喚妲愰幍顔藉珰婵犻潧妫涢弳姘舵煙?闂?SESSION_ENDED
+        // session ended
         deviceSM.transitionTo(DeviceState.SESSION_ENDED)
         addLog('down', 'Session Complete', {}, 'session_end')
-        _setLiveTrace('婵炴潙鍚嬫穱娲儊閽樺鍟呴柤纰卞墰濞夈垽鏌?, { lastSessionStatus: 'completed' })
+        _setLiveTrace('Session completed', { lastSessionStatus: 'completed' })
         break
 
       case 'stt_inference':
@@ -508,7 +598,7 @@ export function useMQTTSimulation() {
           if (state.sttTexts.length > 50) state.sttTexts.shift()
         }
         _setLiveTrace(
-          data.text ? `STT 闁荤姴娲ゅΛ妤呭春閸℃瑢鍋撻悷鐗堟拱闁搞劍宀搁弫?{String(data.text).slice(0, 80)}` : 'STT 濠殿喗绻愮徊钘夛耿椤忓棙瀚氶柛鈩冾殔閻掔厧鈽?,
+          data.text ? `STT received: ${String(data.text).slice(0, 80)}` : 'STT received',
           { lastSttText: data.text || state.lastSttText, lastSessionStatus: 'stt_inference' },
         )
         break
@@ -516,7 +606,7 @@ export function useMQTTSimulation() {
       case 'llm_inference':
         addLog('down', 'Pipeline/LLM', { text: data.text, cmd: data.cmd, duration_ms: data.duration_ms }, 'llm_inference', turnId)
         _setLiveTrace(
-          data.cmd ? `LLM 閻庤鐡曠亸娆撳极閹捐绠ｉ柟閭﹀幖閻︾懓霉閻橆喖鈧呮?{data.cmd}` : 'LLM 濠殿喗绻愮徊钘夛耿椤忓牆绠戞繝闈浥堥崑鎾诲礃閵婏妇顦ユ繝?,
+          data.cmd ? `LLM command: ${data.cmd}` : 'LLM received',
           { lastReplyText: data.text || state.lastReplyText, lastSessionStatus: 'llm_inference' },
         )
         break
@@ -525,30 +615,30 @@ export function useMQTTSimulation() {
         addLog('down', 'Pipeline/TTS', { status: data.status ?? (data.state === 'complete' ? 'success' : data.state), duration_ms: data.duration_ms, chunk_count: data.chunk_count }, 'tts_synthesis', turnId)
         _setLiveTrace(
           data.status === 'success' || data.state === 'complete'
-            ? `TTS 閻庤鐡曠亸娆撳极閹捐绠?${data.chunk_count ?? 0} 婵炴垶鎼╂禍顏堟偂閼哥绱ｉ柟瀛樼箖閸嬵櫐
-            : 'TTS 濠殿喗绻愮徊钘夛耿椤忓牆瑙﹂柛顐ゅ枎閻忓洭鎮归崶璺哄籍闁?,
+            ? `TTS complete: ${data.chunk_count ?? 0} chunks`
+            : 'TTS pending',
           { lastSessionStatus: 'tts_synthesis', lastReplyText: state.lastReplyText },
         )
         break
 
       case 'intro_start':
         addLog('down', 'response/audio/intro/start', {}, 'intro_start', '0')
-        _setLiveTrace('閻庢鍠掗崑鎾绘煕閿曚焦顏犳繛鍛囧洤绠绘い鎾跺枑閺夌懓鈽?, { lastSessionStatus: 'intro_playing' })
+        _setLiveTrace('Intro playing', { lastSessionStatus: 'intro_playing' })
         break
 
       case 'intro_end':
         addLog('down', 'response/audio/intro/eos', {}, 'intro_end', '0')
-        _setLiveTrace('閻庢鍠掗崑鎾绘煕閿曚焦顏犳繛鍛囧喚鍟呴柟缁樺笧閺嗘岸鏌?, { lastSessionStatus: 'intro_complete' })
+        _setLiveTrace('Intro complete', { lastSessionStatus: 'intro_complete' })
         break
 
       case 'vad_speech_started':
         addLog('down', 'VAD/speech_started', {}, 'vadeos')
-        _setLiveTrace('VAD 濠碘槅鍋€閸嬫挻绻涢弶鎴剰闁糕晛鐭傞幃浠嬪Ω閿曗偓閻撴洜鈧鍠掗崑鎾斥攽椤旂⒈鍎撴い鏇楁櫇閹?, { lastSessionStatus: 'capturing' })
+        _setLiveTrace('VAD speech started', { lastSessionStatus: 'capturing' })
         break
 
       case 'vad_speech_stopped':
         addLog('down', 'VAD/speech_stopped', {}, 'vadeos')
-        _setLiveTrace('VAD 濠碘槅鍋€閸嬫挻绻涢弶鎴剰闁糕晛鐭傞幃浠嬪Ω閿曗偓閻撴洟鎮归崶鈺婃闁伙妇鏅槐鎺楀箻鐎涙ê鐨?, { lastSessionStatus: 'active' })
+        _setLiveTrace('VAD speech stopped', { lastSessionStatus: 'active' })
         break
 
       case 'moderation_complete':
@@ -566,42 +656,48 @@ export function useMQTTSimulation() {
         if (payload?.status === 'error') {
           state.errorMessage = payload?.error || state.errorMessage
           state.status = 'error'
+        } else if (payload?.status === 'vad_retrying') {
+          _setLiveTrace('VAD blocked, switching profile and retrying...', { lastSessionStatus: 'vad_retrying' })
+          addLog('down', 'Session/VAD-Retry', { message: payload?.message }, 'session_status')
         } else if (payload?.status === 'completed' || payload?.status === 'session_closed') {
+          if (payload?.status === 'session_closed') {
+            state.sessionId = ''
+          }
           state.status = isConnected.value ? 'active' : 'idle'
         } else if (payload?.status === 'turn_completed' || payload?.status === 'intro_complete' || payload?.status === 'intro_timeout' || payload?.status === 'active') {
           state.status = 'active'
         }
+        // ── 提取延迟指标到 pipelineLatency ──
+        if (payload) {
+          state.pipelineLatency = {
+            stt_latency_ms: payload.stt_latency_ms ?? state.pipelineLatency.stt_latency_ms,
+            llm_latency_ms: payload.llm_latency_ms ?? state.pipelineLatency.llm_latency_ms,
+            tts_latency_ms: payload.tts_latency_ms ?? state.pipelineLatency.tts_latency_ms,
+            e2e_latency_ms: payload.e2e_latency_ms ?? state.pipelineLatency.e2e_latency_ms,
+            done_latency_ms: payload.done_latency_ms ?? state.pipelineLatency.done_latency_ms,
+            tts_chunks: payload.tts_chunks ?? state.pipelineLatency.tts_chunks,
+            tts_duration_ms: payload.tts_duration_ms ?? state.pipelineLatency.tts_duration_ms,
+          }
+        }
         break
 
-        addLog('down', 'Session/Status', payload, 'session_status')
-        let sessionSummary = 'status update'
-        if (payload?.status === 'turn_completed') {
-          sessionSummary = 'turn completed; waiting next turn'
-        } else if (payload?.status === 'intro_complete') {
-          sessionSummary = 'intro completed'
-        } else if (payload?.status === 'intro_timeout') {
-          sessionSummary = 'intro timeout'
-        } else if (payload?.status === 'error') {
-          sessionSummary = 'session error: ' + (payload?.error || 'unknown error')
-        } else if (payload?.status === 'completed') {
-          sessionSummary = 'session completed'
-        } else if (payload?.status === 'active') {
-          sessionSummary = 'session active'
-        }
-        _setLiveTrace(sessionSummary, {
-          lastSessionStatus: String(payload?.status || state.lastSessionStatus || 'active'),
-          lastReplyText: payload?.reply_text || state.lastReplyText,
-          lastSttText: payload?.stt_text || state.lastSttText,
-        })
-        break
-          const tid = extractedTurnId || 'tts'
-          const isCue = tid.startsWith('cue-')
-          _upsertTurn(tid, isCue ? 'cue' : 'tts', { state: 'playing', chunksReceived: 0, startTime: new Date() })
-          if (isCue) state.cueCount++
-          state.status = 'playing'
-          addLog('down', topic, payload, isCue ? 'cue_start' : 'audio_start', tid)
+      case 'upload_progress':
+        state.uploadProgress = {
+          turn_id: data.turn_id || '',
+          chunk: data.chunk || 0,
+          total_chunks: data.total_chunks,
+          percent: data.percent,
         }
         break
+
+      case 'tts_progress':
+        state.ttsProgress = {
+          turn_id: data.turn_id || '',
+          chunk: 0,
+          chunks_received: data.chunks_received,
+        }
+        break
+
 
       case 'audio_chunk':
       case 'chunk':
@@ -693,7 +789,7 @@ export function useMQTTSimulation() {
         // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻柡澶嗘櫅閳ь剛鍠栭崵瀣煙缁嬫寧鐭楅柟?        deviceSM.incrementCommands()
         addLog('down', topic, payload, cmdInfo.preempt ? 'command_preempt' : 'command', extractedTurnId)
         _setLiveTrace(
-          cmdInfo.cmd ? `閻庤鐡曠亸娆撳极閹捐绠ｉ柟閭﹀幖閻︾懓霉閻橆喖鈧呮?{cmdInfo.cmd}` : '閻庤鐡曠亸娆撳极閹捐绠ｉ柟閭﹀幖閻︾懓霉?,
+          cmdInfo.cmd ? 'Command: ' + cmdInfo.cmd : 'Command',
           { lastReplyText: cmdInfo.cmd || state.lastReplyText, lastSessionStatus: 'command' },
         )
         break
@@ -705,7 +801,7 @@ export function useMQTTSimulation() {
         if (state.heartbeatHistory.length > MAX_HEARTBEATS) state.heartbeatHistory.shift()
         addLog('up', topic, payload, 'session_hb')
         if (!state.lastEventSummary) {
-          _setLiveTrace('婵炴潙鍚嬫穱娲儊閸婄喓鐤€闁告劦鍘鹃崕鑼偓鐟版啞瑜板啴宕虹仦鐐秶?, { lastSessionStatus: state.lastSessionStatus || 'active' })
+          _setLiveTrace('Heartbeat received', { lastSessionStatus: state.lastSessionStatus || 'active' })
         }
         break
 
@@ -823,3 +919,4 @@ export function useMQTTSimulation() {
 function isCueTopic(turnId?: string): boolean {
   return !!turnId && turnId.startsWith('cue-')
 }
+
