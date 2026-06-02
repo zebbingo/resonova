@@ -248,6 +248,38 @@ const latestIntroStatus = computed(() => {
   return last.type === 'intro_end' ? 'completed' : 'playing'
 })
 
+function formatSessionStatus(status?: string): string {
+  const map: Record<string, string> = {
+    idle: '空闲',
+    active: '活跃',
+    connecting: '连接中',
+    capturing: '录音中',
+    playing: '播放中',
+    completed: '已完成',
+    error: '错误',
+    turn_sent: '已发送',
+    turn_completed: '已完成',
+    session_closed: '已关闭',
+    vad_retrying: 'VAD 重试中',
+  }
+  if (!status) return '未知'
+  return map[status] || status
+}
+
+function formatIntroStatus(status?: string): string {
+  const map: Record<string, string> = {
+    waiting: '等待中',
+    playing: '播放中',
+    completed: '已完成',
+    timeout: '超时',
+  }
+  if (!status) return '未知'
+  return map[status] || status
+}
+
+const sessionStatusLabel = computed(() => formatSessionStatus(latestSessionStatus.value || state.lastSessionStatus || state.status))
+const introStatusLabel = computed(() => formatIntroStatus(latestIntroStatus.value))
+
 const canSendTurn = computed(() => !!getCurrentAudioId() && !!state.sessionId && (isConnected.value || isSimulating.value))
 
 const liveFeedback = computed(() => {
@@ -272,6 +304,10 @@ watch(
   () => state.lastSessionStatus,
   (nextStatus) => {
     if (!isSendingTurn.value || !pendingSendTurnStepId.value) return
+    if (nextStatus === 'vad_retrying') {
+      state.lastEventSummary = 'VAD 阻塞，正在切换 Profile 重试...'
+      return
+    }
     if (nextStatus === 'turn_completed' || nextStatus === 'completed' || nextStatus === 'session_closed' || nextStatus === 'error') {
       const stepId = pendingSendTurnStepId.value
       pendingSendTurnStepId.value = null
@@ -451,7 +487,7 @@ async function handleConnect() {
     return
   }
   const brokerLabel = mqttProfile.value === 'local'
-    ? `本地 Mosquitto (${mqttHost.value.trim() || 'localhost'}${mqttPort.value ? `:${mqttPort.value}` : ':1883'})`
+    ? `本地 NanoMQ (${mqttHost.value.trim() || 'localhost'}${mqttPort.value ? `:${mqttPort.value}` : ':1883'})`
     : (mqttHost.value.trim()
       ? `${mqttHost.value.trim()}${mqttPort.value ? `:${mqttPort.value}` : ''}`
       : (mqttEnv.value.trim() || '默认 broker'))
@@ -494,7 +530,7 @@ async function handleStart() {
   }
 
   const brokerLabel = mqttProfile.value === 'local'
-    ? `本地 Mosquitto (${mqttHost.value.trim() || 'localhost'}${mqttPort.value ? `:${mqttPort.value}` : ':1883'})`
+    ? `本地 NanoMQ (${mqttHost.value.trim() || 'localhost'}${mqttPort.value ? `:${mqttPort.value}` : ':1883'})`
     : (mqttHost.value.trim()
       ? `${mqttHost.value.trim()}${mqttPort.value ? `:${mqttPort.value}` : ''}`
       : (mqttEnv.value.trim() || '默认 broker'))
@@ -566,18 +602,18 @@ async function handleSendTurn() {
 async function handleSendTurnWithFeedback() {
   const audioId = getCurrentAudioId()
   if (!audioId) {
-    alert('璇峰厛閫夋嫨闊抽')
+    alert('请先选择音频')
     return
   }
   if (!state.sessionId) {
-    alert('璇峰厛绛夊緟浼氳瘽寤虹珛瀹屾垚')
+    alert('请先等待会话建立完成')
     return
   }
 
   const phase = flowStore.phases.find(p => p.id === 'session')
   if (phase) phase.expanded = true
 
-  const stepId = addStep('session', '鎵嬪姩鍙戦€佷竴杞?, `audio_id: ${audioId} · 绛夊緟绯荤粺鍥炲`)
+  const stepId = addStep('session', '手动发送一轮', `audio_id: ${audioId} · 等待系统回复`)
   pendingSendTurnStepId.value = stepId || null
   isSendingTurn.value = true
   state.lastEventSummary = '请求已发出，等待设备回复'
@@ -593,7 +629,7 @@ async function handleSendTurnWithFeedback() {
   } catch (err: any) {
     isSendingTurn.value = false
     pendingSendTurnStepId.value = null
-    failStep('session', stepId || '鎵嬪姩鍙戦€佷竴杞?', err.message || '鍙戦€佸け璐?')
+    failStep('session', stepId || '手动发送一轮', err.message || '发送失败')
   }
 }
 
@@ -879,14 +915,14 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
         <span class="info-label">Session</span>
         <span class="info-value mono">{{ state.sessionId || '-' }}</span>
         <span class="info-label" style="margin-left:12px">状态</span>
-        <span class="info-value">{{ latestSessionStatus }}</span>
+        <span class="info-value">{{ sessionStatusLabel }}</span>
       </div>
       <div class="info-row">
         <span class="info-label">Intro</span>
-        <span class="info-value">{{ latestIntroStatus }}</span>
+        <span class="info-value">{{ introStatusLabel }}</span>
         <span class="info-label" style="margin-left:12px">Heartbeat</span>
-        <span class="info-value" :class="{ 'text-green': heartbeatAlive, 'text-yellow': !heartbeatAlive }">
-          {{ state.heartbeatActive ? 'active' : 'off' }}
+        <span class="info-value" :class="{ 'text-green': state.heartbeatActive, 'text-yellow': !state.heartbeatActive }">
+          {{ state.heartbeatActive ? '开启' : '关闭' }}
         </span>
       </div>
       <div class="info-row">
@@ -918,9 +954,17 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
     <div v-if="(isSimulating || isConnected) && (state.lastEventSummary || state.lastSessionStatus || state.lastSttText || state.lastReplyText)" class="live-feedback">
       <div class="live-feedback-head">
         <span class="live-feedback-title">实时反馈</span>
-        <span class="live-feedback-badge" :class="state.status">{{ state.status }}</span>
+        <span class="live-feedback-badge" :class="state.status" :title="state.status">{{ formatSessionStatus(state.status) }}</span>
       </div>
       <div class="live-feedback-main">{{ liveFeedback[0] }}</div>
+      <div class="live-feedback-line">
+        <span class="live-feedback-label">进度</span>
+        <span class="mono">会话: {{ sessionStatusLabel }} · Intro: {{ introStatusLabel }}</span>
+      </div>
+      <div v-if="isSendingTurn" class="live-feedback-line">
+        <span class="live-feedback-label">当前</span>
+        <span class="mono">{{ state.lastSessionStatus === 'vad_retrying' ? 'VAD 阻塞，正在自动重试' : '请求已发送，等待回复' }}</span>
+      </div>
       <div v-if="state.lastSttText" class="live-feedback-line">
         <span class="live-feedback-label">STT</span>
         <span class="mono">{{ state.lastSttText }}</span>
@@ -957,7 +1001,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
       <label>📳 MQTT Broker 配置</label>
       <div class="broker-grid">
         <select v-model="mqttProfile" class="search-input" @change="applyBrokerProfile(mqttProfile)">
-          <option value="local">本地 Mosquitto</option>
+          <option value="local">本地 NanoMQ</option>
           <option value="relay">Relay 中转</option>
           <option value="custom">自定义 Broker</option>
           <option value="aws_iot">AWS IoT Core</option>
@@ -980,7 +1024,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
         </template>
       </div>
       <div class="broker-hint">
-        本地模式默认走 WSL Mosquitto；Relay / 自定义 / AWS IoT 可填远程 broker 参数。
+        本地模式默认走 WSL NanoMQ；Relay / 自定义 / AWS IoT 可填远程 broker 参数。
         AWS IoT Core 使用 TLS 端口 8883，后端支持从 AWS_IOT_CERT_ROOT 自动发现证书。
       </div>
     </div>
@@ -1174,12 +1218,12 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
       </template>
       <template v-else-if="isConnected && !isSimulating">
         <button class="btn-start" :disabled="!getCurrentAudioId()" @click="handleStart">▶ Start</button>
-        <button class="btn-send-turn" :disabled="!canSendTurn || isSendingTurn" @click="handleSendTurnWithFeedback">{{ isSendingTurn ? '⏳ 等待回复...' : '📣 Send Turn' }}</button>
+        <button class="btn-send-turn" :disabled="!canSendTurn || isSendingTurn" @click="handleSendTurnWithFeedback">{{ isSendingTurn ? (state.lastSessionStatus === 'vad_retrying' ? '🔄 VAD 重试中...' : '⏳ 等待回复...') : '📣 Send Turn' }}</button>
         <button class="btn-disconnect" @click="handleDisconnect">🔲 断开设备</button>
       </template>
       <template v-else-if="isSimulating">
         <button class="btn-stop" @click="handleStop">🔶 停止模拟</button>
-        <button class="btn-send-turn" :disabled="!canSendTurn || isSendingTurn" @click="handleSendTurnWithFeedback">{{ isSendingTurn ? '⏳ 等待回复...' : '📣 Send Turn' }}</button>
+        <button class="btn-send-turn" :disabled="!canSendTurn || isSendingTurn" @click="handleSendTurnWithFeedback">{{ isSendingTurn ? (state.lastSessionStatus === 'vad_retrying' ? '🔄 VAD 重试中...' : '⏳ 等待回复...') : '📣 Send Turn' }}</button>
       </template>
     </div>
 

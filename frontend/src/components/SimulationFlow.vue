@@ -16,8 +16,87 @@ const hasSimulation = computed(() => store.active && entry.value !== null)
 const upCount = computed(() => entry.value?.logs?.filter(l => l.direction === 'up').length ?? 0)
 const downCount = computed(() => entry.value?.logs?.filter(l => l.direction === 'down').length ?? 0)
 
+const latestSessionStatus = computed(() => {
+  const logs = entry.value?.logs || []
+  const latest = [...logs].reverse().find(log => log.type === 'session_status')
+  return String(latest?.payload?.status || entry.value?.status || 'idle')
+})
+
+const latestIntroStatus = computed(() => {
+  const logs = entry.value?.logs || []
+  const latestStatus = [...logs].reverse().find(log => {
+    const status = log.type === 'session_status' ? String(log.payload?.status || '') : ''
+    return status.startsWith('intro_')
+  })
+  const status = String(latestStatus?.payload?.status || '')
+  if (status === 'intro_complete') return 'completed'
+  if (status === 'intro_timeout') return 'timeout'
+  if (status === 'intro_playing') return 'playing'
+
+  const introEvents = [...logs].reverse().filter(log => log.type === 'intro_start' || log.type === 'intro_end')
+  const last = introEvents[0]
+  if (!last) return 'waiting'
+  return last.type === 'intro_end' ? 'completed' : 'playing'
+})
+
+function formatSessionStatus(status?: string): string {
+  const map: Record<string, string> = {
+    idle: '空闲',
+    connecting: '连接中',
+    active: '活跃',
+    capturing: '录音中',
+    playing: '播放中',
+    completed: '已完成',
+    error: '错误',
+    turn_sent: '已发送',
+    turn_completed: '已完成',
+    session_closed: '已关闭',
+    vad_retrying: 'VAD 重试中',
+  }
+  if (!status) return '未知'
+  return map[status] || status
+}
+
+function formatIntroStatus(status?: string): string {
+  const map: Record<string, string> = {
+    waiting: '等待中',
+    playing: '播放中',
+    completed: '已完成',
+    timeout: '超时',
+  }
+  if (!status) return '未知'
+  return map[status] || status
+}
+
+const flowSummary = computed(() => {
+  const parts: string[] = []
+  const state = entry.value?.state
+  if (state?.lastEventSummary) parts.push(state.lastEventSummary)
+  parts.push(`会话: ${formatSessionStatus(latestSessionStatus.value)}`)
+  parts.push(`Intro: ${formatIntroStatus(latestIntroStatus.value)}`)
+  if (state?.lastSttText) parts.push(`STT: ${state.lastSttText}`)
+  if (state?.lastReplyText) parts.push(`回复: ${state.lastReplyText}`)
+  return parts.join(' · ')
+})
+
 const showV16Panel = ref(true)
 const showGenerator = ref(false)
+
+// ── 管道健康检查 ──
+const healthStatus = ref<'idle' | 'checking' | 'healthy' | 'degraded' | 'unhealthy'>('idle')
+const healthDetail = ref('')
+async function checkHealth() {
+  healthStatus.value = 'checking'
+  try {
+    const { data } = await (await import('axios')).default.get('/api/device/pipeline-health')
+    healthStatus.value = data.overall || 'degraded'
+    healthDetail.value = (data.checks || []).map((c: any) => `${c.healthy ? '✅' : '❌'} ${c.node}`).join(' ')
+  } catch {
+    healthStatus.value = 'unhealthy'
+    healthDetail.value = '无法获取健康状态'
+  }
+}
+const healthEmoji: Record<string, string> = { healthy: '💚', degraded: '💛', unhealthy: '❤️', checking: '⏳', idle: '⚪' }
 
 const figurineId = computed(() => entry.value?.figurineId ?? '')
 
@@ -92,6 +171,9 @@ watch(
         <button class="btn-v16-toggle" :class="{ active: showV16Panel }" @click="showV16Panel = !showV16Panel" title="v1.6 详情">
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
         </button>
+        <button class="btn-health" @click="checkHealth" :title="healthDetail || '检查全链路健康'">
+          {{ healthEmoji[healthStatus] }}
+        </button>
         <!-- 正式状态机展示 -->
         <span
           class="sm-badge"
@@ -109,6 +191,10 @@ watch(
           {{ entry!.status === 'idle' ? '空闲' : entry!.status === 'connecting' ? '连接中' : entry!.status === 'active' ? '活跃' : entry!.status === 'capturing' ? '录音中' : entry!.status === 'playing' ? '播放中' : entry!.status === 'completed' ? '已完成' : entry!.status === 'error' ? '错误' : '未知' }}
         </span>
       </div>
+    </div>
+
+    <div v-if="hasSimulation && flowSummary" class="flow-summary">
+      {{ flowSummary }}
     </div>
 
     <!-- v1.6 详情折叠面板 -->
@@ -313,6 +399,9 @@ watch(
           :metrics="entry!.sttResult?.metrics ?? null"
           :session-id="entry!.sessionId"
           :sent-chunks="entry!.sentChunks"
+          :pipeline-latency="entry!.pipelineLatency"
+          :upload-progress="entry!.uploadProgress"
+          :tts-progress="entry!.ttsProgress"
         />
       </div>
       <div v-else class="flow-empty-log">
@@ -354,6 +443,17 @@ watch(
   flex-shrink: 0;
 }
 .status-bar__left, .status-bar__right { display: flex; align-items: center; gap: 8px; }
+
+.flow-summary {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(91, 141, 239, 0.2);
+  border-radius: 8px;
+  background: rgba(91, 141, 239, 0.08);
+  color: var(--text2);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
 
 .device-badge {
   display: inline-flex; align-items: center; gap: 5px;
@@ -716,6 +816,13 @@ watch(
 }
 .btn-v16-toggle:hover { border-color: var(--border); color: var(--text); }
 .btn-v16-toggle.active { border-color: var(--accent); color: var(--accent); background: rgba(91,141,239,0.1); }
+
+.btn-health {
+  background: none; border: 1px solid transparent; color: var(--text3);
+  border-radius: 4px; padding: 1px 5px; cursor: pointer; transition: all 0.15s;
+  display: inline-flex; align-items: center; font-size: 0.85rem;
+}
+.btn-health:hover { border-color: var(--border); color: var(--text); background: var(--surface2); }
 
 .proto-stat {
   color: #4ade80 !important; font-weight: 600;
