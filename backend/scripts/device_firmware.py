@@ -93,7 +93,8 @@ class TurnState(Enum):
 
 class _TurnTracker:
     __slots__ = ("turn_id", "state", "chunks_received", "eos_total_seq",
-                 "eos_event", "audio_data", "stt_text", "downstream_started")
+                 "eos_event", "audio_data", "stt_text", "downstream_started",
+                 "sent_at", "eos_sent_at", "vadeos_at", "tts_start_at", "tts_eos_at", "done_sent_at")
 
     def __init__(self, turn_id: str):
         self.turn_id = turn_id
@@ -104,6 +105,12 @@ class _TurnTracker:
         self.audio_data: list[bytes] = []
         self.stt_text: str = ""
         self.downstream_started = False
+        self.sent_at: float = 0.0
+        self.eos_sent_at: float = 0.0
+        self.vadeos_at: float = 0.0
+        self.tts_start_at: float = 0.0
+        self.tts_eos_at: float = 0.0
+        self.done_sent_at: float = 0.0
 
 
 class DeviceFirmware:
@@ -370,6 +377,7 @@ class DeviceFirmware:
             tracker = self._get_or_create_turn(tid)
             tracker.state = TurnState.UPLOADING
             tracker.eos_event.clear()
+            tracker.sent_at = time.time()
 
         start_payload = json.dumps({
             "codec": "opus", "sr": _OPUS_SR, "channels": _OPUS_CHANNELS,
@@ -389,10 +397,23 @@ class DeviceFirmware:
                 self._request_topic(f"audio/{self.session_id}/{tid}/chunk/{seq}"),
                 opus_data, qos=0,
             )
+            # ── 发射上传进度事件（每 10 chunk 或百分比里程碑） ──
+            if self._on_mqtt_event and (seq % 10 == 0 or seq == total_frames):
+                pct = round(seq / total_frames * 100)
+                self._on_mqtt_event("upload_progress", {
+                    "turn_id": tid,
+                    "chunk": seq,
+                    "total_chunks": total_frames,
+                    "percent": pct,
+                })
 
         duration_ms = int(len(pcm_data) / _OPUS_SR * 1000)
         eos_payload = json.dumps({"total_seq": total_frames, "duration_ms": duration_ms})
         self._publish_request(f"audio/{self.session_id}/{tid}/eos", eos_payload)
+        with self._lock:
+            tracker = self._active_turns.get(tid)
+            if tracker:
+                tracker.eos_sent_at = time.time()
         self._set_state(DeviceState.WAITING)
         self._log(f"[FW] turn {tid}: {total_frames} chunks, {duration_ms}ms")
         return tid
@@ -410,6 +431,10 @@ class DeviceFirmware:
     def send_done(self, turn_id: str, played_seq: int = 0, dropped: int = 0, latency_ms: int = 0):
         if not self.session_id:
             return
+        with self._lock:
+            tracker = self._active_turns.get(turn_id)
+            if tracker:
+                tracker.done_sent_at = time.time()
         payload = json.dumps({
             "played_seq": played_seq, "dropped": dropped, "latency_ms": latency_ms,
             "ts": int(time.time() * 1000),
@@ -523,21 +548,42 @@ class DeviceFirmware:
     def get_downstream_stats(self) -> dict:
         """Aggregate downstream TTS statistics across all active turns.
 
-        Returns dict with tts_response_count (number of downstream audio/start
-        received), tts_chunks (total downstream audio chunks), and
-        tts_duration_ms (computed from chunk count × OPUS_FRAME_MS).
+        Returns dict with tts_response_count, tts_chunks, tts_duration_ms,
+        per-node latency data (stt_latency_ms, llm_latency_ms, tts_latency_ms, e2e_latency_ms),
+        and done receipt latency (done_latency_ms).
         """
         total_responses = 0
         total_chunks = 0
+        stt_latency_ms: float = 0.0
+        llm_latency_ms: float = 0.0
+        tts_latency_ms: float = 0.0
+        e2e_latency_ms: float = 0.0
+        done_latency_ms: float = 0.0
         with self._lock:
             for tid, tracker in self._active_turns.items():
                 if tracker.downstream_started:
                     total_responses += 1
                     total_chunks += tracker.chunks_received
+                # Compute per-node latencies from the latest active turn
+                if tracker.eos_sent_at > 0 and tracker.vadeos_at > 0:
+                    stt_latency_ms = max(stt_latency_ms, (tracker.vadeos_at - tracker.eos_sent_at) * 1000)
+                if tracker.vadeos_at > 0 and tracker.tts_start_at > 0:
+                    llm_latency_ms = max(llm_latency_ms, (tracker.tts_start_at - tracker.vadeos_at) * 1000)
+                if tracker.tts_start_at > 0 and tracker.tts_eos_at > 0:
+                    tts_latency_ms = max(tts_latency_ms, (tracker.tts_eos_at - tracker.tts_start_at) * 1000)
+                if tracker.eos_sent_at > 0 and tracker.tts_eos_at > 0:
+                    e2e_latency_ms = max(e2e_latency_ms, (tracker.tts_eos_at - tracker.eos_sent_at) * 1000)
+                if tracker.tts_eos_at > 0 and tracker.done_sent_at > 0:
+                    done_latency_ms = max(done_latency_ms, (tracker.done_sent_at - tracker.tts_eos_at) * 1000)
         return {
             "tts_response_count": total_responses,
             "tts_chunks": total_chunks,
             "tts_duration_ms": total_chunks * _OPUS_FRAME_MS,
+            "stt_latency_ms": round(stt_latency_ms),
+            "llm_latency_ms": round(llm_latency_ms),
+            "tts_latency_ms": round(tts_latency_ms),
+            "e2e_latency_ms": round(e2e_latency_ms),
+            "done_latency_ms": round(done_latency_ms),
         }
 
     def _flush_after_audio_commands(self, turn_id: str):
@@ -603,6 +649,7 @@ class DeviceFirmware:
             is_downstream = _prefix == "response"
             if is_downstream:
                 tracker.downstream_started = True
+                tracker.tts_start_at = time.time()
                 was_uploading = tracker.chunks_received > 0 or len(tracker.audio_data) > 0
                 if was_uploading:
                     self._log(f"[FW] downstream audio/start turn={turn_id} (preserving upload tracker)")
@@ -628,6 +675,12 @@ class DeviceFirmware:
         elif action.startswith("chunk"):
             tracker.chunks_received += 1
             tracker.audio_data.append(msg.payload)
+            # ── 发射 TTS 下载进度事件（每 10 chunk） ──
+            if self._on_mqtt_event and tracker.chunks_received % 10 == 0:
+                self._on_mqtt_event("tts_progress", {
+                    "turn_id": turn_id,
+                    "chunks_received": tracker.chunks_received,
+                })
 
         elif action == "eos":
             try:
@@ -637,6 +690,7 @@ class DeviceFirmware:
             tracker.eos_total_seq = data.get("total_seq")
             tracker.state = TurnState.DONE
             tracker.eos_event.set()
+            tracker.tts_eos_at = time.time()
 
             if turn_id == "0":
                 self._intro_audio_eos_event.set()
@@ -664,6 +718,7 @@ class DeviceFirmware:
             try:
                 data = json.loads(msg.payload.decode("utf-8")) if msg.payload else {}
                 tracker.stt_text = data.get("text", "")
+                tracker.vadeos_at = time.time()
                 with self._lock:
                     self._session_stt_texts.append(tracker.stt_text)
                 self._log(f"[FW] vadeos turn={turn_id} text=\"{tracker.stt_text[:60]}\"")
