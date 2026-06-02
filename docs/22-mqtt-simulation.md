@@ -1,3 +1,5 @@
+﻿Turn-first reading note: this legacy doc is deprecated, but its lifecycle model is still easiest to read as session shell + turn payload + turn completion.
+
 # MQTT 设备模拟功能说明
 
 > ⚠️ **DEPRECATED / 仅用于旧版模拟器架构**
@@ -929,3 +931,4 @@ async def instrumentation_ws(websocket: WebSocket, session_id: str):
 **下一步**：🎯 通过配置化映射和 Hook 注入，实现源码级别的白盒监控，让Resonova成为 chatbot 的「X-Ray 透视仪」。
 
 **最终目标**：🚀 打造业界领先的 AI 对话系统Resonova，支持从协议层到函数层的全方位监控和分析。
+

@@ -1,3 +1,5 @@
+﻿Turn-first reading note: command management is evaluated through turn-level command injection and turn-level outcomes, with session only as the lifecycle wrapper.
+
 # 指令管理闭环
 
 这份说明记录Resonova里“指令管理”和“指令拦截监控”如何构成一条闭环链路。
@@ -168,4 +170,5 @@ chatbot 运行时从 YAML 读取规则，供：
 - `frontend/src/components/CommandManager.vue`
 - `frontend/src/components/CommandMonitor.vue`
 - `projects/chatbot/src/processors/intent/definitions/voice_commands.yaml`
+
 

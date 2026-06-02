@@ -1,3 +1,5 @@
+﻿Turn-first reading note: session is the lifecycle shell; turn is the product unit. For UI, logs, and E2E, prefer turn_id and turn completion over session-only status.
+
 # Resonova全局评估报告
 
 > 评估范围：resonova + chatbot 两项目 | 评估时间：2026-05-27 15:30
@@ -152,3 +154,4 @@ IDLE → SESSION_ACTIVE → CAPTURING → THINKING → PLAYING → DRAINING → 
 | **P2** | **E2E 测试自动化** | e2e_verify.py 已写但需要集成到 CI 每次提交自动跑 |
 | **P2** | **清理 scripts/devices/ 下的旧设备配置** | 75 个 JSON 中约一半是开发过程中产生的，可归档 |
 | **P3** | **前端设备音量/LED/NFC 可视化** | 让硬件指令的响应在前端可见 |
+

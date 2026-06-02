@@ -1,3 +1,5 @@
+﻿Turn-first reading note: monitoring hooks should surface turn_id and turn-level outcomes first; session fields are supporting context.
+
 # 监控钩子配置说明
 
 ## 📋 概述
@@ -255,3 +257,4 @@ if MONITORING_AVAILABLE and hook_manager and hook_manager.is_enabled():
 - [HOOK_INJECTION_PLAN.md](./HOOK_INJECTION_PLAN.md) - 钩子注入方案详细说明
 - [REAL_DIALOGUE_MODE.md](./REAL_DIALOGUE_MODE.md) - 真实对话模式实现方案
 - [MQTT_SIMULATION.md](./MQTT_SIMULATION.md) - MQTT 设备模拟功能说明
+

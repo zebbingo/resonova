@@ -1,3 +1,5 @@
+﻿Turn-first reading note: runtime monitoring status is considered useful when it can explain the current turn and its completion path.
+
 # 监控钩子系统实施状态报告
 
 ## ✅ 已完成的工作
@@ -239,3 +241,4 @@ graph TB
 
 **最后更新**：2026-05-20 15:35
 **状态**：⏳ 等待 chatbot 依赖安装完成
+

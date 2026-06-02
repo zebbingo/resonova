@@ -1,3 +1,5 @@
+﻿Turn-first reading note: this summary now has to be read as a turn-centric frontend story, not just a session lifecycle report.
+
 # Resonova - 前端完善总结
 
 > **完成时间**: 2026-05-20  
@@ -466,3 +468,4 @@ http://localhost:5173
 ---
 
 **文档结束**
+

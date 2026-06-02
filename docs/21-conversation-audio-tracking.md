@@ -1,3 +1,5 @@
+﻿Turn-first reading note: audio tracking is useful when it can explain the current turn, the generated reply, and the command outcome; session fields are supporting context.
+
 # 对话与 TTS 音频关联追踪 - 使用指南
 
 ## 📋 功能概述
@@ -619,3 +621,4 @@ await linkAudioToTranscript(transcriptId, audioId, 'debug', 0)
 - 🎯 **A/B 测试**：对比不同参数组合的效果
 - 🎯 **知识积累**：积累优秀的参数配置，形成最佳实践
 - 🎯 **团队协作**：分享优秀的测试配置
+
