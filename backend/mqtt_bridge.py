@@ -77,6 +77,11 @@ class SimulationResult:
     tts_response_count: int = 0
     tts_chunks: int = 0
     tts_duration_ms: int = 0
+    stt_latency_ms: int = 0
+    llm_latency_ms: int = 0
+    tts_latency_ms: int = 0
+    e2e_latency_ms: int = 0
+    done_latency_ms: int = 0
     reply_text: str = ""
     backend_responses: list = field(default_factory=list)
     error: str = ""
@@ -528,8 +533,24 @@ class ConnectedDevice:
         logger.info("Device %s powered off", self.device_id)
 
     def simulate_from_wav(self, wav_path: Path, audio_id: str = "", speed: float = 0, subscribe_response: bool = True):
+        """[DEPRECATED] Legacy simulation entry point — emits fake events when no fw.
+
+        Prefer `run_session()` (full session) or `send_user_turn()` (turn on active session)
+        which always go through the real DeviceFirmware MQTT pipeline.
+
+        This method has a fallback branch for `self._fw is None` that emits synthetic
+        events WITHOUT real MQTT traffic — results from that path are NOT trustworthy.
+        """
         if self._fw is not None:
             return self.run_session(wav_path=wav_path, audio_id=audio_id, speed=speed, subscribe_response=subscribe_response)
+
+        # ── ⚠️ DEPRECATED: no-fw fallback — synthetic events, no real MQTT traffic ──
+        logger.warning(
+            "Device %s: simulate_from_wav called without DeviceFirmware — "
+            "emitting synthetic events (no real MQTT). Results are untrustworthy. "
+            "Use connect_device() + run_session() instead.",
+            self.device_id,
+        )
 
         pcm_data, duration_sec = self._load_wav(wav_path)
         chunks = max(1, (len(pcm_data) + OPUS_FRAME_SAMPLES - 1) // OPUS_FRAME_SAMPLES)
@@ -643,7 +664,7 @@ class ConnectedDevice:
             })
             self._emit_session(session_id, "intro", {"status": "intro_playing"})
 
-            intro_ok = self._fw.wait_for_intro_completion(timeout=90)
+            intro_ok = self._fw.wait_for_intro_completion(timeout=5)
             if intro_ok:
                 logger.info("Intro EOS received for session %s", session_id)
                 self._emit_session(session_id, "intro", {
@@ -651,7 +672,7 @@ class ConnectedDevice:
                     "session_id": session_id,
                 })
             else:
-                logger.warning("Intro EOS timeout for session %s", session_id)
+                logger.warning("Intro EOS timeout for session %s (5s), proceeding without intro", session_id)
                 self._emit_session(session_id, "intro", {
                     "status": "intro_timeout",
                     "session_id": session_id,
@@ -670,16 +691,29 @@ class ConnectedDevice:
 
     def send_user_turn(self, wav_path: Path) -> SimulationResult:
         """Send a user audio turn on the already-active session.
-        
+
         The session must have been started by start_session_and_await_intro().
         After the turn completes, the session stays alive for more turns.
+        If the previous session was closed (e.g. by run_session), auto-start a new one.
         """
         import numpy as np
 
         if not self._connected or not self._fw:
             raise ConnectionError(f"Device {self.device_id} is not connected")
+
         if not self._fw.session_id:
-            raise ConnectionError(f"Device {self.device_id} has no active session")
+            logger.info("Device %s has no active session, auto-starting new session for send_user_turn", self.device_id)
+            self._fw.start_session(
+                figurine_id=self.figurine_id,
+                nfc_id=self.nfc_id,
+                mode=self.mode,
+            )
+            self.session_id = self._fw.session_id
+            self._emit_session(self._fw.session_id, "session_status", {
+                "status": "active",
+                "session_id": self._fw.session_id,
+            })
+            logger.info("Auto-started session %s for device %s", self._fw.session_id, self.device_id)
 
         pcm_data, duration_sec = self._load_wav(wav_path)
 
@@ -701,12 +735,21 @@ class ConnectedDevice:
 
         try:
             result.audio_duration_sec = round(duration_sec, 2)
+            logger.info(
+                "[send_user_turn] device=%s session=%s audio=%s duration=%.2fs pcm_frames=%d",
+                self.device_id, session_id, wav_path.stem, duration_sec, len(pcm_data),
+            )
 
             turn_id = self._fw.start_turn(pcm_data)
             result.total_chunks = max(1, (len(pcm_data) + 960 - 1) // 960)
+            logger.info("[send_user_turn] turn_id=%s started, total_chunks=%d", turn_id, result.total_chunks)
 
             response_ok = self._fw.wait_for_turn_response(turn_id=turn_id, timeout=90, expect_downstream=True)
-            logger.info("Turn %s response: %s", turn_id, "ok" if response_ok else "timeout")
+            logger.info(
+                "[send_user_turn] turn_id=%s response=%s elapsed=%.2fs",
+                turn_id, "ok" if response_ok else "TIMEOUT",
+                round(time.time() - result.started_at, 2),
+            )
 
             result.stt_text = "\n".join(self._fw.get_stt_texts())
             result.stt_texts = self._fw.get_stt_texts()
@@ -716,11 +759,30 @@ class ConnectedDevice:
                 if cmd.get("cmd"):
                     result.reply_text = cmd["cmd"]
 
-            # Collect downstream TTS tracking data
             downstream = self._fw.get_downstream_stats()
             result.tts_response_count = downstream["tts_response_count"]
             result.tts_chunks = downstream["tts_chunks"]
             result.tts_duration_ms = downstream["tts_duration_ms"]
+            result.stt_latency_ms = downstream.get("stt_latency_ms", 0)
+            result.llm_latency_ms = downstream.get("llm_latency_ms", 0)
+            result.tts_latency_ms = downstream.get("tts_latency_ms", 0)
+            result.e2e_latency_ms = downstream.get("e2e_latency_ms", 0)
+            result.done_latency_ms = downstream.get("done_latency_ms", 0)
+
+            logger.info(
+                "[send_user_turn] device=%s session=%s turn_id=%s stt=%r tts_count=%d tts_chunks=%d reply=%r",
+                self.device_id, session_id, turn_id,
+                result.stt_text[:80] if result.stt_text else "(empty)",
+                result.tts_response_count, result.tts_chunks,
+                result.reply_text[:80] if result.reply_text else "(none)",
+            )
+
+            is_vad_blocked = (not result.stt_text.strip()) and (result.tts_response_count == 0) and response_ok is False
+            if is_vad_blocked:
+                logger.warning(
+                    "[send_user_turn] VAD BLOCKED detected: device=%s session=%s stt_empty=True tts_count=0 response_timeout=True",
+                    self.device_id, session_id,
+                )
 
             result.completed_at = time.time()
             result.send_duration_sec = round(result.completed_at - result.started_at, 2)
@@ -730,6 +792,19 @@ class ConnectedDevice:
                 "status": "turn_completed",
                 "send_duration_sec": result.send_duration_sec,
                 "audio_duration_sec": result.audio_duration_sec,
+                "total_chunks": result.total_chunks,
+                "stt_text": result.stt_text,
+                "reply_text": result.reply_text,
+                "tts_response_count": result.tts_response_count,
+                "tts_chunks": result.tts_chunks,
+                "tts_duration_ms": result.tts_duration_ms,
+                "stt_latency_ms": result.stt_latency_ms,
+                "llm_latency_ms": result.llm_latency_ms,
+                "tts_latency_ms": result.tts_latency_ms,
+                "e2e_latency_ms": result.e2e_latency_ms,
+                "done_latency_ms": result.done_latency_ms,
+                "cue_count": result.cue_count,
+                "commands_received": result.commands_received,
             })
 
         except Exception as exc:
@@ -789,7 +864,7 @@ class ConnectedDevice:
                     "topic": f"{self._fw.base_topic}/response/#",
                 })
 
-            intro_ok = self._fw.wait_for_intro_completion(timeout=90)
+            intro_ok = self._fw.wait_for_intro_completion(timeout=5)
             if intro_ok:
                 logger.info("Intro EOS received for session %s", result.session_id)
                 self._emit_session(result.session_id, "session_status", {
@@ -835,6 +910,11 @@ class ConnectedDevice:
             result.tts_response_count = downstream["tts_response_count"]
             result.tts_chunks = downstream["tts_chunks"]
             result.tts_duration_ms = downstream["tts_duration_ms"]
+            result.stt_latency_ms = downstream.get("stt_latency_ms", 0)
+            result.llm_latency_ms = downstream.get("llm_latency_ms", 0)
+            result.tts_latency_ms = downstream.get("tts_latency_ms", 0)
+            result.e2e_latency_ms = downstream.get("e2e_latency_ms", 0)
+            result.done_latency_ms = downstream.get("done_latency_ms", 0)
 
             self._fw.stop_session(reason="user_stop")
 
@@ -852,6 +932,11 @@ class ConnectedDevice:
                 "tts_response_count": result.tts_response_count,
                 "tts_chunks": result.tts_chunks,
                 "tts_duration_ms": result.tts_duration_ms,
+                "stt_latency_ms": result.stt_latency_ms,
+                "llm_latency_ms": result.llm_latency_ms,
+                "tts_latency_ms": result.tts_latency_ms,
+                "e2e_latency_ms": result.e2e_latency_ms,
+                "done_latency_ms": result.done_latency_ms,
                 "cue_count": result.cue_count,
                 "commands_received": result.commands_received,
             })
@@ -971,7 +1056,7 @@ class SimulationManager:
     HISTORY_FILE = Path(__file__).parent / "simulation_history.json"
     MAX_HISTORY_RECORDS = 500
 
-    def __init__(self):
+    def __init__(self, profile_switcher: Callable[[str], dict] | None = None):
         self._devices: dict[str, ConnectedDevice] = {}
         self._threads: dict[str, threading.Thread] = {}
         self._lock = threading.RLock()
@@ -979,6 +1064,7 @@ class SimulationManager:
         self._results: dict[str, dict] = {}
         self._session_aliases: dict[str, str] = {}
         self._vad_bypassed: dict[str, bool] = {}
+        self._profile_switcher = profile_switcher
         self._load_history()
         self._start_cleanup_thread()
 
@@ -1229,8 +1315,14 @@ class SimulationManager:
         with self._lock:
             self._threads[device_id] = thread
 
-    def send_user_turn(self, device_id: str, audio_id: str, resolve_audio: Callable[[str], Path | None]) -> dict:
-        """Send a user audio turn on an existing session."""
+    def send_user_turn(self, device_id: str, audio_id: str, resolve_audio: Callable[[str], Path | None],
+                        auto_vad_retry: bool = True) -> dict:
+        """Send a user audio turn on an existing session.
+
+        When auto_vad_retry=True (default), the background thread will detect
+        VAD blocking (empty STT + no TTS response) and automatically retry
+        with profile switching.  Results are delivered via events.
+        """
         with self._lock:
             dev = self._devices.get(device_id)
 
@@ -1250,6 +1342,22 @@ class SimulationManager:
 
         def _run():
             try:
+                current_sid = dev.session_id or (dev._fw.session_id if dev._fw else None)
+                if current_sid:
+                    with self._lock:
+                        self._session_aliases[preliminary_id] = current_sid
+                        self._session_aliases[current_sid] = current_sid
+                    session_id_holder["value"] = current_sid
+                    session_id_holder["ready"].set()
+                    self._results[current_sid] = {
+                        "session_id": current_sid,
+                        "device_id": device_id,
+                        "status": "pending",
+                        "started_at": time.time(),
+                        "audio_id": audio_id,
+                    }
+
+                logger.info("[send_user_turn:thread] Starting turn for device=%s audio=%s sid=%s", device_id, audio_id, current_sid)
                 result = dev.send_user_turn(wav_path=audio_path)
                 real_sid = result.session_id or preliminary_id
                 with self._lock:
@@ -1258,6 +1366,52 @@ class SimulationManager:
                 session_id_holder["value"] = real_sid
                 session_id_holder["ready"].set()
                 self._save_result(result)
+                logger.info(
+                    "[send_user_turn:thread] First attempt done: sid=%s status=%s stt=%r tts=%d",
+                    real_sid, result.status,
+                    (result.stt_text or "")[:60], result.tts_response_count,
+                )
+
+                if auto_vad_retry:
+                    stt = (result.stt_text or "").strip()
+                    tts_count = result.tts_response_count or 0
+                    if not stt and tts_count == 0 and result.status == "completed":
+                        logger.warning(
+                            "[send_user_turn:thread] VAD BLOCKED for sid=%s → auto VAD retry enabled=%s has_switcher=%s",
+                            real_sid, auto_vad_retry, self._profile_switcher is not None,
+                        )
+                        self._vad_bypassed[real_sid] = True
+                        self._emit_session(real_sid, "session_status", {
+                            "status": "vad_retrying",
+                            "session_id": real_sid,
+                            "message": "VAD blocked, switching profile and retrying",
+                        })
+                        switch_result = None
+                        try:
+                            if self._profile_switcher:
+                                logger.info("[send_user_turn:thread] Switching MQTT profile to local (VAD off)")
+                                switch_result = self._profile_switcher("local")
+                                logger.info("[send_user_turn:thread] Profile switch result: %s", switch_result)
+                                time.sleep(3)
+                            else:
+                                logger.warning("[send_user_turn:thread] No profile_switcher, retrying without profile switch")
+                            logger.info("[send_user_turn:thread] Starting VAD-retry second attempt for device=%s", device_id)
+                            result2 = dev.send_user_turn(wav_path=audio_path)
+                            real_sid2 = result2.session_id or real_sid
+                            self._vad_bypassed[real_sid2] = True
+                            with self._lock:
+                                self._session_aliases[real_sid2] = real_sid2
+                            self._save_result(result2)
+                            logger.info(
+                                "[send_user_turn:thread] VAD retry done: sid=%s status=%s stt=%r tts=%d",
+                                real_sid2, result2.status,
+                                (result2.stt_text or "")[:60], result2.tts_response_count,
+                            )
+                        finally:
+                            if self._profile_switcher and switch_result:
+                                prev = switch_result.get("previous", "remote")
+                                logger.info("[send_user_turn:thread] Restoring MQTT profile to %s", prev)
+                                self._profile_switcher(prev)
             except Exception as exc:
                 session_id_holder["error"] = str(exc)
                 session_id_holder["ready"].set()
@@ -1522,7 +1676,11 @@ class SimulationManager:
         mqtt_tls_client_key: str | None = None,
         mqtt_tls_insecure: bool | None = None,
     ) -> str:
-        """Legacy API: connect + run in one shot (for backward compatibility)."""
+        """[DEPRECATED] Legacy API: connect + run in one shot.
+
+        Kept for backward compatibility with older tests and docs.
+        Prefer the two-step pattern: connect_device() → run_simulation().
+        """
         (resolved_profile, resolved_env, resolved_host, resolved_port, resolved_tls,
          resolved_tls_ca, resolved_tls_cert, resolved_tls_key, resolved_tls_insecure) = _resolve_broker_config(
             mqtt_profile=mqtt_profile,
