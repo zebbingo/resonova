@@ -1,4 +1,4 @@
-<script setup lang="ts">
+﻿<script setup lang="ts">
 import type { MQTTMessageLog } from '../composables/useMQTTSimulation'
 
 defineProps<{
@@ -220,3 +220,4 @@ function truncatePayload(payload: any): string {
   background: var(--text2);
 }
 </style>
+

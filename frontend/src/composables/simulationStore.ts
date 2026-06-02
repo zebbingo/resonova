@@ -1,5 +1,5 @@
 import { reactive, computed, type Ref } from 'vue'
-import type { MQTTMessageLog, TurnInfo, CommandInfo, DeviceSimulationState, SttResultData } from './useMQTTSimulation'
+import type { MQTTMessageLog, TurnInfo, CommandInfo, DeviceSimulationState, SttResultData, PipelineLatency, ProgressInfo } from './useMQTTSimulation'
 
 export interface SimulationEntry {
   deviceId: string
@@ -20,6 +20,9 @@ export interface SimulationEntry {
   currentTurn: number
   protocolVersion: string
   fwVersion: string
+  pipelineLatency: PipelineLatency
+  uploadProgress: ProgressInfo | null
+  ttsProgress: ProgressInfo | null
 }
 
 export const store = reactive<{
@@ -63,6 +66,9 @@ export function registerSimulation(opts: {
     get currentTurn() { return s.currentTurn ?? 0 },
     get protocolVersion() { return s.protocolVersion ?? 'v1.6' },
     get fwVersion() { return s.fwVersion ?? '1.6.0' },
+    get pipelineLatency() { return s.pipelineLatency ?? { stt_latency_ms: 0, llm_latency_ms: 0, tts_latency_ms: 0, e2e_latency_ms: 0, done_latency_ms: 0, tts_chunks: 0, tts_duration_ms: 0 } },
+    get uploadProgress() { return s.uploadProgress ?? null },
+    get ttsProgress() { return s.ttsProgress ?? null },
   } as any
 }
 

@@ -1,11 +1,30 @@
 <script setup lang="ts">
-import type { STTMetrics } from '../composables/useMQTTSimulation'
+import type { STTMetrics, PipelineLatency, ProgressInfo } from '../composables/useMQTTSimulation'
+import { computed } from 'vue'
 
-defineProps<{
+const props = defineProps<{
   metrics: STTMetrics | null
   sessionId?: string
   sentChunks: number
+  pipelineLatency?: PipelineLatency | null
+  uploadProgress?: ProgressInfo | null
+  ttsProgress?: ProgressInfo | null
 }>()
+
+const hasLatency = computed(() =>
+  props.pipelineLatency && (
+    props.pipelineLatency.stt_latency_ms > 0 ||
+    props.pipelineLatency.llm_latency_ms > 0 ||
+    props.pipelineLatency.tts_latency_ms > 0 ||
+    props.pipelineLatency.e2e_latency_ms > 0
+  )
+)
+
+function fmtMs(ms: number): string {
+  if (!ms || ms <= 0) return '-'
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(2)}s`
+}
 </script>
 
 <template>
@@ -49,6 +68,54 @@ defineProps<{
 
       <div class="metric-note">
         💡 RTF < 0.1 表示识别速度快于音频播放速度
+      </div>
+    </template>
+
+    <!-- ── 管道延迟指标 ── -->
+    <template v-if="hasLatency">
+      <h3 style="margin-top: 16px;">⏱️ 管道延迟</h3>
+
+      <div class="metric-row delay-stt">
+        <span class="metric-label">STT (语音识别)</span>
+        <span class="metric-value">{{ fmtMs(pipelineLatency!.stt_latency_ms) }}</span>
+      </div>
+
+      <div class="metric-row delay-llm">
+        <span class="metric-label">LLM (推理决策)</span>
+        <span class="metric-value">{{ fmtMs(pipelineLatency!.llm_latency_ms) }}</span>
+      </div>
+
+      <div class="metric-row delay-tts">
+        <span class="metric-label">TTS (语音合成)</span>
+        <span class="metric-value">{{ fmtMs(pipelineLatency!.tts_latency_ms) }}</span>
+      </div>
+
+      <div class="metric-row delay-e2e highlight">
+        <span class="metric-label">E2E (端到端)</span>
+        <span class="metric-value">{{ fmtMs(pipelineLatency!.e2e_latency_ms) }}</span>
+      </div>
+
+      <div v-if="pipelineLatency!.tts_chunks > 0" class="metric-row">
+        <span class="metric-label">TTS 块数 / 时长</span>
+        <span class="metric-value">{{ pipelineLatency!.tts_chunks }} chunks / {{ fmtMs(pipelineLatency!.tts_duration_ms) }}</span>
+      </div>
+
+      <div v-if="pipelineLatency!.done_latency_ms > 0" class="metric-row">
+        <span class="metric-label">播放回执 (done)</span>
+        <span class="metric-value">{{ fmtMs(pipelineLatency!.done_latency_ms) }}</span>
+      </div>
+
+      <!-- ── 上传进度 ── -->
+      <div v-if="uploadProgress && uploadProgress.total_chunks" class="progress-section">
+        <div class="progress-label">⬆️ 上传: {{ uploadProgress.chunk }} / {{ uploadProgress.total_chunks }} ({{ uploadProgress.percent }}%)</div>
+        <div class="progress-bar">
+          <div class="progress-fill upload" :style="{ width: uploadProgress.percent + '%' }" />
+        </div>
+      </div>
+
+      <!-- ── TTS 下载进度 ── -->
+      <div v-if="ttsProgress && (ttsProgress.chunks_received ?? 0) > 0" class="progress-section">
+        <div class="progress-label">⬇️ TTS 接收: {{ ttsProgress.chunks_received }} chunks</div>
       </div>
     </template>
   </div>
@@ -127,5 +194,40 @@ defineProps<{
   font-size: 0.75rem;
   color: var(--text2);
   line-height: 1.5;
+}
+
+.delay-stt { background: rgba(91, 141, 239, 0.08); margin: 0 -8px; padding: 6px 8px; border-radius: 4px; }
+.delay-llm { background: rgba(232, 168, 56, 0.08); margin: 0 -8px; padding: 6px 8px; border-radius: 4px; }
+.delay-tts { background: rgba(76, 175, 125, 0.08); margin: 0 -8px; padding: 6px 8px; border-radius: 4px; }
+.delay-e2e { background: rgba(156, 39, 176, 0.1); margin: 0 -8px; padding: 6px 8px; border-radius: 4px; }
+
+.progress-section {
+  margin-top: 10px;
+  padding: 8px;
+  background: rgba(46, 51, 72, 0.3);
+  border-radius: 4px;
+}
+
+.progress-label {
+  font-size: 0.78rem;
+  color: var(--text2);
+  margin-bottom: 4px;
+}
+
+.progress-bar {
+  height: 6px;
+  background: var(--surface2);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.progress-fill.upload {
+  background: linear-gradient(90deg, var(--blue), #7c4dff);
 }
 </style>
