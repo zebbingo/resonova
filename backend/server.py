@@ -52,7 +52,7 @@ ENABLE_CONVERSATION_TRACKING = os.getenv("ENABLE_CONVERSATION_TRACKING", "true")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "test")  # test / production
 
 # ── MQTT 设备模拟 ──────────────────────────────────────
-from mqtt_bridge import simulation_manager, SimulationManager
+from mqtt_bridge import simulation_manager, SimulationManager, _resolve_mqtt_host, _resolve_mqtt_port
 
 # ── Language 枚举（独立，不依赖 chatbot 项目） ──────────────
 from enum import Enum
@@ -194,6 +194,8 @@ def startup_init():
         snapshot["env_file"]["exists"],
         snapshot["paths"]["frontend_dist_exists"],
     )
+
+    simulation_manager._profile_switcher = _switch_mqtt_profile
 
 
 @app.get("/api/debug/runtime-config", include_in_schema=False)
@@ -1310,6 +1312,258 @@ def test_voice_command(req: TestCommandRequest):
     }
 
 
+class VerifyCommandsResponse(BaseModel):
+    """指令校验响应模型。"""
+    voicepipe_commands: list[str] = []
+    chatbot_commands: list[str] = []
+    commands_only_in_voicepipe: list[str] = []
+    commands_only_in_chatbot: list[str] = []
+    commands_in_both: list[str] = []
+    voicepipe_yaml_path: str = ""
+    chatbot_yaml_path: str = ""
+    chatbot_yaml_exists: bool = False
+    voicepipe_yaml_exists: bool = False
+    recommendations: list[str] = []
+
+
+@app.get("/api/device/verify-commands")
+def verify_commands() -> VerifyCommandsResponse:
+    """对比 VoicePipe 与 chatbot 的两套指令规则，报告差异。
+
+    读取:
+      - VoicePipe: COMMANDS_YAML_PATH (测试平台自身 commands.yaml)
+      - Chatbot:   CHATBOT_VOICE_COMMANDS_YAML_PATH (真实 bot 的 voice_commands.yaml)
+
+    对比两套规则中定义的 command 名称，帮助发现 drifting 风险。
+    """
+    voicepipe_cmds: set[str] = set()
+    chatbot_cmds: set[str] = set()
+    voicepipe_exists = COMMANDS_YAML_PATH.exists()
+    chatbot_exists = CHATBOT_VOICE_COMMANDS_YAML_PATH.exists()
+
+    # ── 提取 VoicePipe 指令 ──
+    if voicepipe_exists:
+        try:
+            vp_data = yaml.safe_load(COMMANDS_YAML_PATH.read_text(encoding="utf-8"))
+            if vp_data:
+                for kw in vp_data.get("kws_keywords", []):
+                    if isinstance(kw, dict) and kw.get("command"):
+                        voicepipe_cmds.add(kw["command"])
+                for ci in vp_data.get("command_intents", []):
+                    if isinstance(ci, dict) and ci.get("command"):
+                        voicepipe_cmds.add(ci["command"])
+                for cr in vp_data.get("command_rules", []):
+                    if isinstance(cr, dict) and cr.get("command"):
+                        voicepipe_cmds.add(cr["command"])
+        except Exception as exc:
+            logger.warning("Failed to parse VoicePipe commands.yaml: %s", exc)
+
+    # ── 提取 Chatbot 指令 ──
+    if chatbot_exists:
+        try:
+            cb_data = yaml.safe_load(CHATBOT_VOICE_COMMANDS_YAML_PATH.read_text(encoding="utf-8"))
+            if cb_data:
+                for intent in cb_data.get("intents", []):
+                    if isinstance(intent, dict) and intent.get("command"):
+                        chatbot_cmds.add(intent["command"])
+        except Exception as exc:
+            logger.warning("Failed to parse chatbot voice_commands.yaml: %s", exc)
+
+    # ── 计算差异 ──
+    both = voicepipe_cmds & chatbot_cmds
+    only_vp = voicepipe_cmds - chatbot_cmds
+    only_cb = chatbot_cmds - voicepipe_cmds
+
+    # ── 生成建议 ──
+    recommendations: list[str] = []
+    if only_vp:
+        recommendations.append(
+            f"{len(only_vp)} 条指令仅在 VoicePipe 中定义，chatbot 未覆盖: "
+            + ", ".join(sorted(only_vp))
+        )
+    if only_cb:
+        recommendations.append(
+            f"{len(only_cb)} 条指令仅在 chatbot 中定义，VoicePipe 未覆盖: "
+            + ", ".join(sorted(only_cb))
+        )
+    if not chatbot_exists:
+        recommendations.append(
+            f"Chatbot voice_commands.yaml 不存在于 {CHATBOT_VOICE_COMMANDS_YAML_PATH}，"
+            "请设置 VOICE_COMMANDS_YAML_PATH 环境变量或确保 chatbot 项目已就绪"
+        )
+    if not both:
+        recommendations.append("两套规则无交集！VoicePipe 测试可能无法反映真实 chatbot 行为")
+    elif len(both) == len(chatbot_cmds) and not only_cb:
+        recommendations.append("✅ VoicePipe 已覆盖 chatbot 所有指令")
+    else:
+        recommendations.append(
+            f"VoicePipe 覆盖了 chatbot {len(both)}/{len(chatbot_cmds)} 条指令"
+        )
+    if not recommendations:
+        recommendations.append("两套规则均已加载且无差异")
+
+    return VerifyCommandsResponse(
+        voicepipe_commands=sorted(voicepipe_cmds),
+        chatbot_commands=sorted(chatbot_cmds),
+        commands_only_in_voicepipe=sorted(only_vp),
+        commands_only_in_chatbot=sorted(only_cb),
+        commands_in_both=sorted(both),
+        voicepipe_yaml_path=str(COMMANDS_YAML_PATH),
+        chatbot_yaml_path=str(CHATBOT_VOICE_COMMANDS_YAML_PATH),
+        chatbot_yaml_exists=chatbot_exists,
+        voicepipe_yaml_exists=voicepipe_exists,
+        recommendations=recommendations,
+    )
+
+
+class PipelineHealthResponse(BaseModel):
+    """全链路健康检查响应模型。"""
+    overall: str = "unknown"  # healthy | degraded | unhealthy
+    nodes: dict = {}
+    checks: list[dict] = []
+    checked_at: float = 0.0
+
+
+@app.get("/api/device/pipeline-health")
+def pipeline_health() -> PipelineHealthResponse:
+    """检查全链路各节点健康状态。
+
+    检查节点:
+      - MQTT Broker (NanoMQ:1883)
+      - bot_mqtt Worker (WSL 进程)
+      - Chatbot API (端口 7860)
+
+    返回整体状态:
+      healthy   — 所有节点正常
+      degraded  — 部分节点异常但核心链路可用
+      unhealthy — MQTT Broker 不可达（核心链路断开）
+    """
+    import socket
+    import subprocess
+
+    checks: list[dict] = []
+    now = time.time()
+    mqtt_host = _resolve_mqtt_host()
+    mqtt_port = _resolve_mqtt_port()
+
+    # ── 1. MQTT Broker 连通性 ──
+    mqtt_ok = False
+    mqtt_detail = ""
+    t0 = time.time()
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(3)
+        result = sock.connect_ex((mqtt_host, mqtt_port))
+        sock.close()
+        if result == 0:
+            mqtt_ok = True
+            mqtt_detail = f"{mqtt_host}:{mqtt_port} reachable"
+        else:
+            mqtt_detail = f"{mqtt_host}:{mqtt_port} connection refused (errno={result})"
+    except Exception as exc:
+        mqtt_detail = f"{mqtt_host}:{mqtt_port} error: {exc}"
+    checks.append({
+        "node": "mqtt_broker",
+        "healthy": mqtt_ok,
+        "detail": mqtt_detail,
+        "latency_ms": round((time.time() - t0) * 1000),
+    })
+
+    # ── 2. bot_mqtt Worker ──
+    bot_ok = False
+    bot_detail = ""
+    _in_wsl = os.path.exists("/proc/sys/fs/binfmt_misc/WSLInterop") if sys.platform == "linux" else False
+    t0 = time.time()
+    try:
+        if sys.platform == "win32":
+            # Running on Windows → use wsl.exe to reach WSL
+            result = subprocess.run(
+                ["wsl", "bash", "-c", "pgrep -f bot_mqtt > /dev/null && echo OK || echo NOT_FOUND"],
+                capture_output=True, text=True, timeout=5,
+            )
+        elif _in_wsl:
+            # Already inside WSL → run pgrep directly
+            result = subprocess.run(
+                ["pgrep", "-f", "bot_mqtt"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                result = subprocess.CompletedProcess(args=[], returncode=0, stdout="OK")
+            else:
+                result = subprocess.CompletedProcess(args=[], returncode=1, stdout="NOT_FOUND")
+        else:
+            # Native Linux — try pgrep directly
+            result = subprocess.run(
+                ["pgrep", "-f", "bot_mqtt"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                result = subprocess.CompletedProcess(args=[], returncode=0, stdout="OK")
+            else:
+                result = subprocess.CompletedProcess(args=[], returncode=1, stdout="NOT_FOUND")
+        if result.returncode == 0 and "OK" in result.stdout:
+            bot_ok = True
+            bot_detail = "bot_mqtt process running" + (" (WSL)" if sys.platform == "win32" else "")
+        elif "NOT_FOUND" in (result.stdout or ""):
+            bot_detail = "bot_mqtt process NOT found"
+        else:
+            bot_detail = f"check failed: {result.stderr.strip() or 'unknown'}"
+    except FileNotFoundError:
+        bot_detail = "wsl command not available (not on Windows?)"
+    except subprocess.TimeoutExpired:
+        bot_detail = "check timed out after 5s"
+    except Exception as exc:
+        bot_detail = f"check error: {exc}"
+    checks.append({
+        "node": "bot_mqtt_worker",
+        "healthy": bot_ok,
+        "detail": bot_detail,
+        "latency_ms": round((time.time() - t0) * 1000),
+    })
+
+    # ── 3. Chatbot API ──
+    api_ok = False
+    api_detail = ""
+    api_url = os.getenv("CHATBOT_API_URL", "http://127.0.0.1:7860")
+    t0 = time.time()
+    try:
+        import urllib.request
+        req = urllib.request.Request(api_url + "/", method="GET")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            if 200 <= resp.status < 400:
+                api_ok = True
+                api_detail = f"{api_url} HTTP {resp.status}"
+            else:
+                api_detail = f"{api_url} HTTP {resp.status}"
+    except Exception as exc:
+        api_detail = f"{api_url} unreachable: {exc}"
+    checks.append({
+        "node": "chatbot_api",
+        "healthy": api_ok,
+        "detail": api_detail,
+        "latency_ms": round((time.time() - t0) * 1000),
+    })
+
+    # ── 计算整体状态 ──
+    if mqtt_ok and bot_ok and api_ok:
+        overall = "healthy"
+    elif mqtt_ok:
+        overall = "degraded"
+    else:
+        overall = "unhealthy"
+
+    return PipelineHealthResponse(
+        overall=overall,
+        nodes={
+            "mqtt_broker": {"host": mqtt_host, "port": mqtt_port},
+            "bot_mqtt_worker": {"host": "WSL", "pid_check": bot_ok},
+            "chatbot_api": {"url": api_url},
+        },
+        checks=checks,
+        checked_at=now,
+    )
+
+
 # ── API: 设备模拟 ────────────────────────────────────────
 
 
@@ -1950,16 +2204,13 @@ def _translate_ws_event(event: dict) -> dict:
     v1.6 翻译映射:
       mqtt_publish          → mqtt_message  （前端日志用）
       mqtt_response_vadeos  → stt_result    （前端 STT 展示 + 指标用）
-      mqtt_response (type=command) → command （前端 Command 面板用）
-      mqtt_response (type=cue_audio) → cue （前端 Turn 面板用）
-      mqtt_response (type=audio_eos) → audio_eos （前端 Turn 面板用）
-      mqtt_response (type=audio_start) → audio_start （前端 Turn 面板用）
       session_closed        → session_complete（前端关闭会话用）
-      stt_inference         → stt_inference  （前端 STT 面板用）
-      tts_synthesis         → tts_synthesis  （前端 Pipeline 面板用）
-      llm_inference         → llm_inference  （前端 Pipeline 面板用）
-      intro_start / intro_end → intro 事件
-      其他事件类型原样透传。
+
+    以下事件由 DeviceFirmware 发出，名称与前端约定一致，显式透传:
+      stt_inference         → stt_inference  （前端 Pipeline/STT 面板用）
+      tts_synthesis         → tts_synthesis  （前端 Pipeline/TTS 面板用）
+      llm_inference         → llm_inference  （前端 Pipeline/LLM 面板用）
+      introeos              → introeos       （前端 Intro 完成信号）
 
     额外字段:
       short_topic           — 从完整 MQTT 路径提取的短名称
@@ -1983,6 +2234,9 @@ def _translate_ws_event(event: dict) -> dict:
         translated = dict(event)
         translated["type"] = "session_complete"
         return translated
+    # ── Pipeline 关键事件：DeviceFirmware 发出，前端约定同名处理，显式透传 ──
+    elif ev_type in ("stt_inference", "tts_synthesis", "llm_inference", "introeos"):
+        return event
     return event
 
 
