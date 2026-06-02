@@ -52,7 +52,7 @@ ENABLE_CONVERSATION_TRACKING = os.getenv("ENABLE_CONVERSATION_TRACKING", "true")
 ENVIRONMENT = os.getenv("ENVIRONMENT", "test")  # test / production
 
 # ── MQTT 设备模拟 ──────────────────────────────────────
-from mqtt_bridge import simulation_manager, SimulationManager, _resolve_mqtt_host, _resolve_mqtt_port
+from mqtt_bridge import simulation_manager, SimulationManager, _resolve_local_mqtt_host, _resolve_mqtt_host, _resolve_mqtt_port
 
 # ── Language 枚举（独立，不依赖 chatbot 项目） ──────────────
 from enum import Enum
@@ -1443,8 +1443,8 @@ def pipeline_health() -> PipelineHealthResponse:
 
     checks: list[dict] = []
     now = time.time()
-    mqtt_host = _resolve_mqtt_host()
-    mqtt_port = _resolve_mqtt_port()
+    mqtt_host = _resolve_local_mqtt_host() if MQTT_BROKER_PROFILE == "local" else _resolve_mqtt_host()
+    mqtt_port = MQTT_PORT
 
     # ── 1. MQTT Broker 连通性 ──
     mqtt_ok = False
