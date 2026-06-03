@@ -136,8 +136,15 @@ class DeviceFirmware:
         self.env = env or _MQTT_ENV
         self._broker_host = broker_host or _MQTT_BROKER
         self._broker_port = broker_port or _MQTT_PORT
-        self._username = username or os.getenv("MQTT_USERNAME")
-        self._password = password or os.getenv("MQTT_PASSWORD")
+        # Only use MQTT_USERNAME/PASSWORD when connecting to a non-local broker.
+        # Local NanoMQ uses anonymous auth; sending credentials causes rc=7 disconnects.
+        _is_local_broker = (self._broker_host or "").lower() in {"localhost", "127.0.0.1"}
+        if _is_local_broker:
+            self._username = username  # explicit only, skip env
+            self._password = password
+        else:
+            self._username = username or os.getenv("MQTT_USERNAME")
+            self._password = password or os.getenv("MQTT_PASSWORD")
         self._tls_enabled = tls_enabled
         self._tls_ca_cert = tls_ca_cert or os.getenv("MQTT_TLS_CA_CERT")
         self._tls_client_cert = tls_client_cert or os.getenv("MQTT_TLS_CLIENT_CERT")
@@ -257,7 +264,7 @@ class DeviceFirmware:
         return self._active_turns[turn_id]
 
     def power_on(self):
-        self._log(f"[FW] Power on: {self.device_id}")
+        self._log(f"[FW] Power on: {self.device_id} broker={self._broker_host}:{self._broker_port} user={self._username} tls={self._tls_enabled}")
 
         lwt_payload = json.dumps({"online": False, "ts": int(time.time() * 1000),
                                    "fw": self.identity.get("fw_version", "1.6.0")})

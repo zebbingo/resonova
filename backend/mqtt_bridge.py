@@ -590,18 +590,44 @@ class ConnectedDevice:
 
         def _publish(topic: str, payload: str = ""):
             self._emit_device("mqtt_publish", {"topic": topic, "payload": payload})
+            if self._fw and self._connected:
+                try:
+                    self._fw._client.publish(topic, payload, qos=1)
+                except Exception as exc:
+                    logger.warning("MQTT publish failed for %s: %s", topic, exc)
 
-        _publish(f"{base_topic}/request/session/{session_id}/start")
-        _publish(f"{base_topic}/request/audio/{session_id}/turn-1/start")
+        # If we have a real DeviceFirmware connection, use it for proper MQTT + Opus encoding
+        use_fw = self._fw and self._connected and hasattr(self._fw, 'start_session')
+        if use_fw:
+            self._fw.session_id = session_id
+            self._fw.start_session(self.figurine_id, nfc_id=self.nfc_id or "sim-nfc", mode=self.mode)
+            logger.info("[run_session] Using DeviceFirmware for real MQTT publish, session=%s", session_id)
+        else:
+            _publish(f"{base_topic}/request/session/{session_id}/start",
+                     json.dumps({"turn_proto": 1, "audio": {"codec": "opus", "sr": 16000, "channels": 1},
+                                 "character": self.figurine_id, "nfc_id": self.nfc_id or "sim-nfc",
+                                 "mode": self.mode, "fw": "1.6.0"}))
+            _publish(f"{base_topic}/request/audio/{session_id}/turn-1/start",
+                     json.dumps({"codec": "opus", "sr": 16000, "channels": 1}))
 
         stopped = False
-        for seq in range(chunks):
-            if getattr(self, "_stop_requested", False):
-                stopped = True
-                break
-            _publish(f"{base_topic}/request/audio/{session_id}/turn-1/chunk/{seq}")
+        if use_fw:
+            # Use DeviceFirmware for proper Opus encoding + real MQTT publish
+            try:
+                self._fw.start_turn(pcm_data, turn_id="turn-1")
+                logger.info("[run_session] Audio uploaded via DeviceFirmware, %d samples", len(pcm_data))
+            except Exception as exc:
+                logger.warning("[run_session] DeviceFirmware.start_turn failed: %s, falling back to event-only", exc)
+        else:
+            for seq in range(chunks):
+                if getattr(self, "_stop_requested", False):
+                    stopped = True
+                    break
+                _publish(f"{base_topic}/request/audio/{session_id}/turn-1/chunk/{seq}")
 
         _publish(f"{base_topic}/request/audio/{session_id}/turn-1/eos")
+        if use_fw:
+            self._fw.stop_session(reason="simulate_complete")
         _publish(f"{base_topic}/request/session/{session_id}/end")
 
         if not stopped:
@@ -664,7 +690,7 @@ class ConnectedDevice:
             })
             self._emit_session(session_id, "intro", {"status": "intro_playing"})
 
-            intro_ok = self._fw.wait_for_intro_completion(timeout=5)
+            intro_ok = self._fw.wait_for_intro_completion(timeout=30)
             if intro_ok:
                 logger.info("Intro EOS received for session %s", session_id)
                 self._emit_session(session_id, "intro", {
@@ -672,7 +698,7 @@ class ConnectedDevice:
                     "session_id": session_id,
                 })
             else:
-                logger.warning("Intro EOS timeout for session %s (5s), proceeding without intro", session_id)
+                logger.warning("Intro EOS timeout for session %s (30s), proceeding without intro", session_id)
                 self._emit_session(session_id, "intro", {
                     "status": "intro_timeout",
                     "session_id": session_id,
@@ -864,7 +890,7 @@ class ConnectedDevice:
                     "topic": f"{self._fw.base_topic}/response/#",
                 })
 
-            intro_ok = self._fw.wait_for_intro_completion(timeout=5)
+            intro_ok = self._fw.wait_for_intro_completion(timeout=30)
             if intro_ok:
                 logger.info("Intro EOS received for session %s", result.session_id)
                 self._emit_session(result.session_id, "session_status", {
@@ -872,7 +898,7 @@ class ConnectedDevice:
                     "session_id": result.session_id,
                 })
             else:
-                logger.warning("Intro EOS timeout for session %s (still sending audio)", result.session_id)
+                logger.warning("Intro EOS timeout for session %s (30s, still sending audio)", result.session_id)
                 self._emit_session(result.session_id, "session_status", {
                     "status": "intro_timeout",
                     "session_id": result.session_id,

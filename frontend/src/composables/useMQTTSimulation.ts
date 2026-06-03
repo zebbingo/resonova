@@ -500,6 +500,38 @@ export function useMQTTSimulation() {
     return data
   }
 
+  /**
+   * 选择角色并启动会话（模拟 NFC 碰触）。触发 session/start + 开场白。
+   * 前提是设备已通过 connectDevice 连接。
+   */
+  async function startSession(config: { figurineId: string; mode: 'dialogue' | 'story' | 'music' }) {
+    if (!_deviceId) throw new Error('设备未连接，请先点击连接')
+    if (!isConnected.value) throw new Error('设备未连接')
+
+    state.status = 'connecting'
+    deviceSM.transitionTo(DeviceState.SESSION_ACTIVE, {
+      sessionMode: config.mode as SessionMode,
+      figurineId: config.figurineId,
+      deviceId: _deviceId,
+    })
+
+    try {
+      const resp = await axios.post('/api/device/start-session', {
+        device_id: _deviceId,
+        figurine_id: config.figurineId,
+        mode: config.mode,
+      })
+      state.status = 'active'
+      addLog('up', 'session/start', { figurineId: config.figurineId, mode: config.mode }, 'session_start')
+      return resp.data
+    } catch (error: any) {
+      state.errorMessage = error.response?.data?.error || error.message
+      state.status = 'error'
+      deviceSM.setError(state.errorMessage || '启动会话失败')
+      throw error
+    }
+  }
+
   function _handleMqttMessage(direction: 'up' | 'down', topic: string, payload: any, messageSubType: string, turnId?: string) {
     const tid = turnId || _extractTurnIdFromTopic(topic)
     switch (messageSubType) {
@@ -907,6 +939,7 @@ export function useMQTTSimulation() {
     sttResult,
     connectDevice,
     disconnectDevice,
+    startSession,
     startSimulation,
     sendTurn,
     stopSimulation,
