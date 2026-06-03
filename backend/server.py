@@ -1585,7 +1585,7 @@ class DeviceConnectRequest(BaseModel):
 
 @app.post("/api/device/connect")
 def connect_device(req: DeviceConnectRequest):
-    """连接设备（power_on）。设备上线后可持续运行多个 session。"""
+    """连接设备（power_on）。设备上线后等待选择角色，不自动触发开场白。"""
     try:
         result = simulation_manager.connect_device(
             device_id=req.device_id,
@@ -1601,6 +1601,7 @@ def connect_device(req: DeviceConnectRequest):
             mqtt_tls_client_cert=req.mqtt_tls_client_cert,
             mqtt_tls_client_key=req.mqtt_tls_client_key,
             mqtt_tls_insecure=req.mqtt_tls_insecure,
+            skip_auto_intro=True,
         )
         return result
     except ConnectionError as exc:
@@ -1613,6 +1614,31 @@ def connect_device(req: DeviceConnectRequest):
 def disconnect_device(device_id: str):
     """断开设备（power_off）。"""
     return simulation_manager.disconnect_device(device_id)
+
+
+class StartSessionRequest(BaseModel):
+    device_id: str
+    figurine_id: str = "doctor"
+    mode: str = "dialogue"
+    nfc_id: str = "sim-nfc"
+
+
+@app.post("/api/device/start-session")
+def start_session(req: StartSessionRequest):
+    """选择角色并触发 session/start + 开场白。模拟真实设备的 NFC 碰触流程。"""
+    try:
+        dev = simulation_manager._devices.get(req.device_id)
+        if not dev or not dev.is_connected:
+            return {"error": f"设备 {req.device_id} 未连接，请先连接设备"}
+        # 更新角色信息
+        dev.figurine_id = req.figurine_id
+        dev.mode = req.mode
+        dev.nfc_id = req.nfc_id
+        # 触发开场白会话（后台线程）
+        simulation_manager._trigger_intro_session(dev, req.device_id)
+        return {"device_id": req.device_id, "figurine_id": req.figurine_id, "status": "session_started"}
+    except Exception as exc:
+        return {"error": f"启动会话失败: {exc}"}
 
 
 @app.get("/api/device/list")
@@ -3587,7 +3613,7 @@ _SERVICE_SCRIPT = "/mnt/d/zebbingo/scripts/start-local-dev.sh"
 _SERVICE_INFO = {
     "bot_runner": {"name": "Bot 运行器", "display_name": "bot_runner", "port": 7860, "log": "/tmp/start-local-dev/logs/bot_runner.log", "suites": ["all", "chatbot"]},
     "stt_backend": {"name": "STT 后端", "display_name": "stt backend", "port": 8765, "log": "/tmp/start-local-dev/logs/stt_backend.log", "suites": ["all", "stt"]},
-    "frontend_dev": {"name": "前端开发服务器", "display_name": "frontend dev", "port": 3000, "log": "/tmp/start-local-dev/logs/frontend_dev.log", "suites": ["all", "chatbot"]},
+    "frontend_dev": {"name": "前端开发服务器", "display_name": "frontend dev", "port": 5173, "log": "/tmp/start-local-dev/logs/frontend_dev.log", "suites": ["all", "chatbot"]},
     "mqtt_worker": {"name": "MQTT 工作者", "display_name": "mqtt worker", "port": None, "log": "/tmp/start-local-dev/logs/mqtt_worker.log", "suites": ["all", "chatbot"]},
 }
 
@@ -3599,7 +3625,7 @@ _SERVICE_ANNOTATIONS = {
         "sensitive_env": [],
         "env_vars": [
             {"key": "CHATBOT_MQTT_ENV", "description": "MQTT 环境标识", "default": "prod"},
-            {"key": "CHATBOT_MQTT_HOST", "description": "MQTT Broker 地址（127.0.0.1 = 本地 Mosquitto）", "default": "127.0.0.1"},
+            {"key": "CHATBOT_MQTT_HOST", "description": "MQTT Broker 地址（127.0.0.1 = 本地 NanoMQ）", "default": "127.0.0.1"},
             {"key": "CHATBOT_MQTT_PORT", "description": "MQTT Broker 端口", "default": "1883"},
             {"key": "BOT_RUNNER_PORT", "description": "服务监听端口", "default": "7860"},
         ],
@@ -3616,10 +3642,10 @@ _SERVICE_ANNOTATIONS = {
         ],
     },
     "frontend_dev": {
-        "description": "Chatbot Vue 3 前端开发服务器（Vite HMR），监听端口 :3000",
+        "description": "Chatbot Vue 3 前端开发服务器（Vite HMR），监听端口 :5173",
         "sensitive_env": [],
         "env_vars": [
-            {"key": "FRONTEND_PORT", "description": "前端开发服务器端口", "default": "3000"},
+            {"key": "FRONTEND_PORT", "description": "前端开发服务器端口", "default": "5173"},
         ],
     },
     "mqtt_worker": {
@@ -3653,8 +3679,8 @@ _PROFILE_GROUPS = {
         "description": "切换 MQTT 消息代理（影响 bot_runner + mqtt_worker）",
         "available": {
             "local": {
-                "label": "本地 Mosquitto",
-                "description": "使用 WSL 中的 Mosquitto broker\n地址: 127.0.0.1:1883\n认证: chiptalk / Zebbingo2024!",
+                "label": "本地 NanoMQ",
+                "description": "使用 WSL 中的 NanoMQ broker\n地址: 127.0.0.1:1883\n认证: chiptalk / Zebbingo2024!",
                 "env": {
                     "CHATBOT_MQTT_ENV": "prod",
                     "CHATBOT_MQTT_HOST": "127.0.0.1",
