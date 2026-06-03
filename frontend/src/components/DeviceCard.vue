@@ -1,4 +1,4 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { ref, computed, watch, onMounted, onBeforeUnmount, nextTick } from 'vue'
 import type { AudioItem, FigurineConfig, StoryItem, MusicItem } from '../types'
 import { audioUrl, mediaStreamUrl, fetchFigurines, fetchStories, fetchMusic, fetchFigurineTTSAudios, generateTTS, fetchGeneratedVoices, generatedAudioUrl, translateText } from '../api'
@@ -188,6 +188,7 @@ const {
   sttResult,
   connectDevice,
   disconnectDevice,
+  startSession,
   startSimulation,
   sendTurn,
   stopSimulation,
@@ -447,6 +448,13 @@ watch(figurineId, (newVal) => {
   if (newVal && mode.value === 'dialogue') {
     loadFigurineTTSAudios()
   }
+
+  // 模拟 NFC 碰触：设备已连接时，选角色自动触发 session/start + 开场白
+  if (newVal && isConnected.value && !isSimulating.value) {
+    startSession({ figurineId: newVal, mode: mode.value }).catch(err => {
+      console.warn('[NFC] 自动启动会话失败:', err.message)
+    })
+  }
 })
 
 watch(() => state.isOnline, (newVal) => {
@@ -485,10 +493,6 @@ function getBrokerConfig() {
 }
 
 async function handleConnect() {
-  if (!figurineId.value) {
-    alert('请先选择角色')
-    return
-  }
   const brokerLabel = mqttProfile.value === 'local'
     ? `本地 NanoMQ (${mqttHost.value.trim() || 'localhost'}${mqttPort.value ? `:${mqttPort.value}` : ':1883'})`
     : (mqttHost.value.trim()
@@ -1219,7 +1223,7 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
     <!-- 控制按钮 -->
     <div class="control-section">
       <template v-if="!isConnected && !isSimulating">
-        <button class="btn-connect" :disabled="isConnecting || !figurineId" @click="handleConnect">
+        <button class="btn-connect" :disabled="isConnecting" @click="handleConnect">
           {{ isConnecting ? '🔄 连接中...' : '🔲 连接设备' }}
         </button>
       </template>
