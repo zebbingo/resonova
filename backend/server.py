@@ -237,6 +237,19 @@ if _FRONTEND_DIST.exists():
 
 CACHE_DIR.mkdir(exist_ok=True)
 
+# ── 模拟音频文件服务（DeviceFirmware 解码后的 WAV）─────────
+_AUDIO_CACHE_DIR = Path(__file__).resolve().parent / ".audio_cache"
+_AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+@app.get("/api/sim-audio/{filename}")
+def serve_sim_audio(filename: str):
+    """Serve decoded audio files from DeviceFirmware."""
+    from fastapi.responses import FileResponse
+    filepath = _AUDIO_CACHE_DIR / filename
+    if not filepath.exists():
+        return {"error": f"Audio file not found: {filename}"}
+    return FileResponse(filepath, media_type="audio/wav")
+
 # 语言映射
 LANG_MAP: dict[str, Optional[Language]] = {
     "zh": Language.ZH,
