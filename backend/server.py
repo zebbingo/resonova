@@ -1796,13 +1796,23 @@ def start_device_simulation(req: SimulateRequest):
     后端将加载指定音频，通过真实 MQTT 协议发送到 chatbot 后端，
     模拟真实设备的会话生命周期。
 
-    如果 bypass_vad=True，模拟结果会标记 vad_bypassed，
-    前端可根据 STT 结果判断是否需要手动切换 MQTT profile。
+    如果设备已连接且有活跃 session，走 send_user_turn 路径（真实 DeviceFirmware）。
+    否则走旧的 start_simulation 路径（兼容未 connect 的场景）。
     """
     if not req.audio_id:
         return {"error": "audio_id is required"}
 
     try:
+        # 检查是否已有连接的设备 + 活跃 session → 走 send_user_turn
+        dev = simulation_manager._devices.get(req.device_id)
+        if dev and dev.is_connected and (dev.session_id or (dev._fw and dev._fw.session_id)):
+            result = simulation_manager.send_user_turn(
+                device_id=req.device_id,
+                audio_id=req.audio_id,
+                resolve_audio=_resolve_audio_for_sim,
+            )
+            return result
+
         session_id = simulation_manager.start_simulation(
             device_id=req.device_id,
             figurine_id=req.figurine_id,
