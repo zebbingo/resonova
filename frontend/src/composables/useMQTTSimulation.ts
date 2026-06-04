@@ -2,6 +2,32 @@ import { ref, reactive } from 'vue'
 import axios from 'axios'
 import { deviceSM, DeviceState, SessionMode } from '../stores/deviceStateMachine'
 
+// ── 浏览器自动播放解锁 ──────────────────────────────────────
+// 现代浏览器阻止无用户交互的音频播放。首次被阻止时注册一次性交互监听器，
+// 用户点击/按键后自动恢复播放队列。
+let _audioUnlockInstalled = false
+const _pendingAudio: HTMLAudioElement[] = []
+
+function _unlockAndPlay(audio: HTMLAudioElement) {
+  _pendingAudio.push(audio)
+  if (!_audioUnlockInstalled) {
+    _audioUnlockInstalled = true
+    const handler = () => {
+      document.removeEventListener('click', handler)
+      document.removeEventListener('keydown', handler)
+      document.removeEventListener('touchstart', handler)
+      _audioUnlockInstalled = false
+      for (const a of _pendingAudio) {
+        a.play().catch(() => {})
+      }
+      _pendingAudio.length = 0
+    }
+    document.addEventListener('click', handler, { once: true })
+    document.addEventListener('keydown', handler, { once: true })
+    document.addEventListener('touchstart', handler, { once: true })
+  }
+}
+
 export type MQTTMessageType =
   | 'session_start' | 'session_end' | 'session_hb'
   | 'audio_start' | 'chunk' | 'eos' | 'abort' | 'done'
@@ -16,6 +42,7 @@ export type MQTTMessageType =
   | 'ota_update' | 'config_update'
   | 'upload_progress' | 'tts_progress'
   | 'device_state' | 'device_error'
+  | 'vad_speech_started' | 'vad_speech_stopped'
   | 'other'
 
 export interface MQTTMessageLog {
@@ -787,7 +814,9 @@ export function useMQTTSimulation() {
             const audio = new Audio(payload.url)
             audio.volume = 1.0
             audio.play().catch(() => {
-              console.warn('[Audio] Autoplay blocked, URL:', payload.url)
+              // 浏览器自动播放被阻止，等待用户交互后播放
+              console.warn('[Audio] Autoplay blocked, queuing for user gesture:', payload.url)
+              _unlockAndPlay(audio)
             })
             state.lastAudioUrl = payload.url
           } catch (err) {
