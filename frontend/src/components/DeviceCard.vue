@@ -57,7 +57,7 @@ const selectedAudioId = ref<string>('')
 const selectedStoryId = ref<string>('')
 const selectedMusicId = ref<string>('')
 const mqttProfile = ref<'local' | 'relay' | 'custom' | 'aws_iot'>('local')
-const mqttEnv = ref('prod')
+const mqttEnv  = ref('development')
 const mqttHost = ref('localhost')
 const mqttPort = ref<number | null | ''>(1883)
 const mqttTls = ref<'default' | 'enabled' | 'disabled'>('disabled')
@@ -90,11 +90,30 @@ function loadRecentAudios() {
   } catch {}
 }
 
+// ── 从后端获取 MQTT 默认配置（动态，不硬编码） ──
+let _backendMqttDefaults: { env: string; host: string; port: number } | null = null
+
+async function fetchBackendMqttDefaults() {
+  try {
+    const resp = await fetch('/api/debug/runtime-config')
+    if (!resp.ok) return
+    const data = await resp.json()
+    const mqtt = data?.mqtt
+    if (mqtt) {
+      _backendMqttDefaults = {
+        env: mqtt.env || 'development',
+        host: mqtt.host || 'localhost',
+        port: mqtt.port || 1883,
+      }
+    }
+  } catch {}
+}
+
 function setLocalBrokerDefaults() {
   mqttProfile.value = 'local'
-  mqttEnv.value = 'prod'
-  mqttHost.value = 'localhost'
-  mqttPort.value = 1883
+  mqttEnv.value = _backendMqttDefaults?.env || 'development'
+  mqttHost.value = _backendMqttDefaults?.host || 'localhost'
+  mqttPort.value = _backendMqttDefaults?.port || 1883
   mqttTls.value = 'disabled'
 }
 
@@ -137,9 +156,16 @@ function loadBrokerConfig() {
     }
     const parsed = JSON.parse(raw)
     mqttProfile.value = ['relay', 'custom', 'aws_iot'].includes(parsed.mqttProfile) ? parsed.mqttProfile : 'local'
-    mqttEnv.value = parsed.mqttEnv || (mqttProfile.value === 'local' ? 'prod' : '')
-    mqttHost.value = parsed.mqttHost || (mqttProfile.value === 'local' ? 'localhost' : '')
-    mqttPort.value = typeof parsed.mqttPort === 'number' ? parsed.mqttPort : (mqttProfile.value === 'local' ? 1883 : null)
+    // local profile: 使用后端动态默认值，不从 localStorage 读取 env/host/port
+    if (mqttProfile.value === 'local') {
+      mqttEnv.value = _backendMqttDefaults?.env || 'development'
+      mqttHost.value = _backendMqttDefaults?.host || 'localhost'
+      mqttPort.value = _backendMqttDefaults?.port || 1883
+    } else {
+      mqttEnv.value = parsed.mqttEnv || ''
+      mqttHost.value = parsed.mqttHost || ''
+      mqttPort.value = typeof parsed.mqttPort === 'number' ? parsed.mqttPort : null
+    }
     if (parsed.mqttTlsMode === 'enabled' || parsed.mqttTlsMode === 'disabled' || parsed.mqttTlsMode === 'default') {
       mqttTls.value = parsed.mqttTlsMode
     } else if (typeof parsed.mqttTls === 'boolean') {
@@ -359,9 +385,10 @@ async function loadFigurines() {
   }
 }
 
-onMounted(() => {
-  loadRecentAudios()
+onMounted(async () => {
+  await fetchBackendMqttDefaults()
   loadBrokerConfig()
+  loadRecentAudios()
   loadFigurines()
 })
 
