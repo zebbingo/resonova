@@ -490,11 +490,17 @@ class ConnectedDevice:
     def power_on(self):
         from scripts.device_firmware import DeviceFirmware
 
+        # When profile is "local", explicitly pass empty credentials to override
+        # any MQTT_USERNAME/MQTT_PASSWORD env vars.  Local NanoMQ/Mosquitto uses
+        # anonymous auth; sending credentials causes rc=7 disconnects.
+        _is_local = self.broker_profile == "local"
         self._fw = DeviceFirmware(
             self.device_id,
             env=self.env,
             broker_host=self.broker_host,
             broker_port=self.broker_port,
+            username="" if _is_local else None,
+            password="" if _is_local else None,
             tls_enabled=self.broker_tls,
             tls_ca_cert=self.broker_tls_ca_cert,
             tls_client_cert=self.broker_tls_client_cert,
@@ -689,6 +695,9 @@ class ConnectedDevice:
                 "session_id": session_id,
             })
             self._emit_session(session_id, "intro", {"status": "intro_playing"})
+            # Also emit to device queue so the device WebSocket receives it
+            # (frontend only connects /ws/device/{id}, not /ws/session/{id})
+            self._emit_device("intro", {"status": "intro_playing", "session_id": session_id})
 
             intro_ok = self._fw.wait_for_intro_completion(timeout=30)
             if intro_ok:
@@ -697,12 +706,14 @@ class ConnectedDevice:
                     "status": "intro_complete",
                     "session_id": session_id,
                 })
+                self._emit_device("intro", {"status": "intro_complete", "session_id": session_id})
             else:
                 logger.warning("Intro EOS timeout for session %s (30s), proceeding without intro", session_id)
                 self._emit_session(session_id, "intro", {
                     "status": "intro_timeout",
                     "session_id": session_id,
                 })
+                self._emit_device("intro", {"status": "intro_timeout", "session_id": session_id})
 
             return session_id
 

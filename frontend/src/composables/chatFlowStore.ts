@@ -11,6 +11,65 @@
 import { reactive, watch } from 'vue'
 import { store as simStore } from './simulationStore'
 
+// ── 浏览器端音频播放器（PCM int16 → Web Audio API）────────────────
+class BrowserAudioPlayer {
+  private ctx: AudioContext | null = null
+  private queue: Float32Array[] = []
+  private playing = false
+  private sampleRate = 16000
+  private channels = 1
+
+  configure(sampleRate: number, channels: number) {
+    this.sampleRate = sampleRate
+    this.channels = channels
+  }
+
+  enqueuePcmB64(pcmB64: string) {
+    if (!this.ctx) {
+      this.ctx = new AudioContext({ sampleRate: this.sampleRate })
+    }
+    // base64 → int16 → float32
+    const raw = atob(pcmB64)
+    const int16 = new Int16Array(raw.length / 2)
+    for (let i = 0; i < int16.length; i++) {
+      int16[i] = (raw.charCodeAt(i * 2 + 1) << 8) | raw.charCodeAt(i * 2)
+    }
+    const float32 = new Float32Array(int16.length)
+    for (let i = 0; i < int16.length; i++) {
+      float32[i] = int16[i] / 32768
+    }
+    this.queue.push(float32)
+    if (!this.playing) this._drain()
+  }
+
+  private async _drain() {
+    this.playing = true
+    while (this.queue.length > 0) {
+      const pcm = this.queue.shift()!
+      const buf = this.ctx!.createBuffer(this.channels, pcm.length, this.sampleRate)
+      buf.getChannelData(0).set(pcm)
+      const src = this.ctx!.createBufferSource()
+      src.buffer = buf
+      src.connect(this.ctx!.destination)
+      src.start()
+      // 等这个 buffer 播完再播下一个
+      await new Promise<void>(r => { src.onended = () => r() })
+    }
+    this.playing = false
+  }
+
+  stop() {
+    this.queue = []
+    this.playing = false
+    if (this.ctx) {
+      this.ctx.close()
+      this.ctx = null
+    }
+  }
+}
+
+const audioPlayer = new BrowserAudioPlayer()
+
 // ── 类型 ────────────────────────────────────────────────
 
 export type FlowPhaseId = 'device' | 'role' | 'session'
@@ -491,12 +550,19 @@ watch(
         // 回复音频开始
         else if (downType === 'audio_start') {
           addStep(phase, '回复音频接收', '开始接收音频帧')
+          if (log.payload?.sample_rate) {
+            audioPlayer.configure(log.payload.sample_rate, log.payload.channels || 1)
+          }
         } 
         // 回复音频 chunk
         else if (downType === 'audio_chunk') {
           const step = flowStore.phases.find(x => x.id === phase)?.steps.find(s => s.label === '回复音频接收')
           if (step) {
             step.detail = `接收中 · 第 ${log.payload?.seq || log.payload?.index || '?'} 帧`
+          }
+          // 播放 PCM 音频
+          if (log.payload?.pcm_b64) {
+            audioPlayer.enqueuePcmB64(log.payload.pcm_b64)
           }
         } 
         // 回复音频结束

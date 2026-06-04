@@ -1636,7 +1636,9 @@ def start_session(req: StartSessionRequest):
         dev.nfc_id = req.nfc_id
         # 触发开场白会话（后台线程）
         simulation_manager._trigger_intro_session(dev, req.device_id)
-        return {"device_id": req.device_id, "figurine_id": req.figurine_id, "status": "session_started"}
+        session_id = dev.session_id or ""
+        return {"device_id": req.device_id, "figurine_id": req.figurine_id,
+                "session_id": session_id, "status": "session_started"}
     except Exception as exc:
         return {"error": f"启动会话失败: {exc}"}
 

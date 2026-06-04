@@ -522,7 +522,10 @@ export function useMQTTSimulation() {
         mode: config.mode,
       })
       state.status = 'active'
-      addLog('up', 'session/start', { figurineId: config.figurineId, mode: config.mode }, 'session_start')
+      if (resp.data.session_id) {
+        state.sessionId = resp.data.session_id
+      }
+      addLog('up', 'session/start', { figurineId: config.figurineId, mode: config.mode, session_id: state.sessionId }, 'session_start')
       return resp.data
     } catch (error: any) {
       state.errorMessage = error.response?.data?.error || error.message
@@ -805,6 +808,25 @@ export function useMQTTSimulation() {
 
       case 'introeos':
         addLog('down', topic, payload, 'introeos', '0')
+        state.lastSessionStatus = 'intro_complete'
+        break
+
+      case 'intro':
+        if (payload?.status === 'intro_playing') {
+          state.status = 'active'
+          state.lastSessionStatus = 'intro_playing'
+          addLog('down', 'Intro', { status: 'intro_playing', session_id: payload.session_id }, 'intro_start')
+          _setLiveTrace('Intro playing...', { lastSessionStatus: 'intro_playing' })
+        } else if (payload?.status === 'intro_complete') {
+          state.lastSessionStatus = 'intro_complete'
+          state.sessionId = payload.session_id || state.sessionId
+          addLog('down', 'Intro', { status: 'intro_complete', session_id: payload.session_id }, 'intro_end')
+          _setLiveTrace('Intro complete — session ready for user input', { lastSessionStatus: 'intro_complete' })
+        } else if (payload?.status === 'intro_timeout') {
+          state.lastSessionStatus = 'intro_timeout'
+          addLog('down', 'Intro', { status: 'intro_timeout' }, 'intro_end')
+          _setLiveTrace('Intro timeout (30s)', { lastSessionStatus: 'intro_timeout' })
+        }
         break
 
       case 'command':
@@ -869,6 +891,31 @@ export function useMQTTSimulation() {
       case 'state_reported':
         state.configStatus = { ver: payload?.ver || 0, status: 'applied', appliedAt: payload?.applied_at }
         addLog('up', topic, payload, 'config_update')
+        break
+
+      case 'device_state':
+        // Sync DeviceFirmware state → frontend state machine
+        if (payload?.state) {
+          const stateMap: Record<string, DeviceState> = {
+            'offline': DeviceState.OFFLINE,
+            'idle': DeviceState.IDLE,
+            'session_active': DeviceState.SESSION_ACTIVE,
+            'capturing': DeviceState.CAPTURING,
+            'waiting': DeviceState.WAITING,
+            'playing': DeviceState.PLAYING,
+            'session_ended': DeviceState.SESSION_ENDED,
+          }
+          const mapped = stateMap[payload.state]
+          if (mapped) {
+            deviceSM.transitionTo(mapped)
+          }
+        }
+        addLog('down', 'Device State', payload, 'device_state')
+        break
+
+      case 'device_error':
+        state.errorMessage = payload?.error || 'Device error'
+        addLog('down', 'Device Error', payload, 'device_error')
         break
 
       default:

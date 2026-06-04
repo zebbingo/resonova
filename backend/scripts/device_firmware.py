@@ -70,6 +70,30 @@ _SESSION_HB_INTERVAL = 60
 _DEVICE_HB_INTERVAL = 30
 
 
+def _is_local_or_private_host(host: str) -> bool:
+    """Check if a host is local (loopback) or in a private/reserved IP range.
+
+    This handles:
+      - localhost / 127.0.0.1 / ::1 (standard loopback)
+      - WSL interop IPs (e.g. 172.20.x.x from ``wsl hostname -I``)
+      - Docker bridge IPs (e.g. 172.17.x.x)
+      - Any private RFC 1918 address (10.x, 172.16-31.x, 192.168.x)
+
+    These brokers typically use anonymous auth; sending MQTT_USERNAME/MQTT_PASSWORD
+    credentials is unnecessary and causes rc=7 disconnects.
+    """
+    host_lower = host.strip().lower()
+    if host_lower in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    # Fast-path: skip DNS resolution for dotted-quad IPs
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(host_lower)
+    except ValueError:
+        return False
+    return addr.is_private or addr.is_loopback
+
+
 class DeviceState(Enum):
     OFFLINE = "offline"
     IDLE = "idle"
@@ -138,7 +162,7 @@ class DeviceFirmware:
         self._broker_port = broker_port or _MQTT_PORT
         # Only use MQTT_USERNAME/PASSWORD when connecting to a non-local broker.
         # Local NanoMQ uses anonymous auth; sending credentials causes rc=7 disconnects.
-        _is_local_broker = (self._broker_host or "").lower() in {"localhost", "127.0.0.1"}
+        _is_local_broker = _is_local_or_private_host(self._broker_host or "")
         if _is_local_broker:
             self._username = username  # explicit only, skip env
             self._password = password
@@ -208,6 +232,11 @@ class DeviceFirmware:
         self._intro_eos_event = threading.Event()
         self._intro_audio_eos_event = threading.Event()
         self._lock = threading.Lock()
+        self._cleaned_up = False
+
+        # Ensure cleanup on process exit (handles kill -9 gracefully for paho threads)
+        import atexit
+        atexit.register(self._atexit_cleanup)
 
         self._active_turns: OrderedDict[str, _TurnTracker] = OrderedDict()
         self._commands: list[dict] = []
@@ -311,6 +340,16 @@ class DeviceFirmware:
             target=self._device_hb_loop, daemon=True, name=f"devhb-{self.device_id}",
         )
         self._device_hb_thread.start()
+
+    def _atexit_cleanup(self):
+        if self._cleaned_up:
+            return
+        self._cleaned_up = True
+        try:
+            self._client.loop_stop()
+            self._client.disconnect()
+        except Exception:
+            pass
 
     def power_off(self):
         self._log(f"[FW] Power off: {self.device_id}")
@@ -674,14 +713,25 @@ class DeviceFirmware:
             tracker.state = TurnState.PLAYING
             self._log(f"[FW] audio/start turn={turn_id} cue={self._is_cue_turn_id(turn_id)}")
             if self._on_mqtt_event:
-                self._on_mqtt_event("tts_synthesis", {
-                    "state": "start",
+                self._on_mqtt_event("audio_start", {
                     "turn_id": turn_id,
+                    "cue": self._is_cue_turn_id(turn_id),
+                    "sample_rate": _OPUS_SR,
+                    "channels": _OPUS_CHANNELS,
                 })
 
         elif action.startswith("chunk"):
             tracker.chunks_received += 1
             tracker.audio_data.append(msg.payload)
+            # ── 发射音频 chunk 到前端（用于播放） ──
+            if self._on_mqtt_event:
+                import base64
+                self._on_mqtt_event("audio_chunk", {
+                    "turn_id": turn_id,
+                    "seq": tracker.chunks_received,
+                    "audio_b64": base64.b64encode(msg.payload).decode("ascii"),
+                    "codec": "opus",
+                })
             # ── 发射 TTS 下载进度事件（每 10 chunk） ──
             if self._on_mqtt_event and tracker.chunks_received % 10 == 0:
                 self._on_mqtt_event("tts_progress", {
@@ -702,6 +752,11 @@ class DeviceFirmware:
             if turn_id == "0":
                 self._intro_audio_eos_event.set()
                 self._log("[FW] intro audio EOS")
+                if self._on_mqtt_event:
+                    self._on_mqtt_event("tts_synthesis", {
+                        "state": "complete",
+                        "turn_id": "0",
+                    })
             elif self._is_cue_turn_id(turn_id):
                 self._log(f"[FW] cue audio EOS turn={turn_id}")
                 if self.on_cue_audio:
