@@ -9,11 +9,13 @@ export type MQTTMessageType =
   | 'command' | 'command_preempt'
   | 'vadeos' | 'introeos'
   | 'stt_result' | 'stt_inference' | 'llm_inference' | 'tts_synthesis'
-  | 'audio_chunk' | 'audio_eos' | 'audio_start as audio_start_down'
+  | 'audio_chunk' | 'audio_eos' | 'audio_ready' | 'audio_start as audio_start_down'
   | 'intro_start' | 'intro_end'
   | 'moderation_complete' | 'output_moderation_complete'
   | 'session_status' | 'mqtt_publish'
   | 'ota_update' | 'config_update'
+  | 'upload_progress' | 'tts_progress'
+  | 'device_state' | 'device_error'
   | 'other'
 
 export interface MQTTMessageLog {
@@ -766,6 +768,20 @@ export function useMQTTSimulation() {
             chunks: payload.chunks,
             duration_ms: payload.duration_ms,
           }, 'audio_ready', turnId)
+          // Update live trace so UI shows audio info
+          _setLiveTrace(
+            `Audio decoded: turn ${turnId} (${payload.chunks ?? '?'} chunks, ${payload.duration_ms ?? '?'}ms)`,
+            { lastSessionStatus: 'audio_ready' },
+          )
+          // Update turn state to 'playing'
+          if (extractedTurnId) {
+            _upsertTurn(extractedTurnId, 'tts', {
+              state: 'playing',
+              totalSeq: payload.chunks,
+              durationMs: payload.duration_ms,
+            })
+          }
+          state.status = 'playing'
           // Auto-play: create Audio element and play
           try {
             const audio = new Audio(payload.url)
@@ -928,7 +944,7 @@ export function useMQTTSimulation() {
             'session_active': DeviceState.SESSION_ACTIVE,
             'capturing': DeviceState.CAPTURING,
             'waiting': DeviceState.WAITING,
-            'playing': DeviceState.PLAYING,
+            'playing': DeviceState.SESSION_ACTIVE,
             'session_ended': DeviceState.SESSION_ENDED,
           }
           const mapped = stateMap[payload.state]

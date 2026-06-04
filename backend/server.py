@@ -2281,7 +2281,8 @@ def _translate_ws_event(event: dict) -> dict:
         translated["type"] = "session_complete"
         return translated
     # ── Pipeline 关键事件：DeviceFirmware 发出，前端约定同名处理，显式透传 ──
-    elif ev_type in ("stt_inference", "tts_synthesis", "llm_inference", "introeos"):
+    elif ev_type in ("stt_inference", "tts_synthesis", "llm_inference", "introeos",
+                     "audio_ready", "device_state", "device_error"):
         return event
     return event
 

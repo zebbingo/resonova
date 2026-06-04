@@ -984,6 +984,13 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
         <span class="live-feedback-label">回复</span>
         <span class="mono">{{ state.lastReplyText }}</span>
       </div>
+      <div v-if="state.lastAudioUrl" class="live-feedback-line" style="flex-direction:column;gap:4px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span class="live-feedback-label">Audio</span>
+          <span class="mono" style="font-size:0.7rem;color:var(--text2)">{{ state.lastAudioUrl.split('/').pop() }}</span>
+        </div>
+        <audio :src="state.lastAudioUrl" controls style="width:100%;height:32px;margin-top:2px"></audio>
+      </div>
     </div>
 
     <div class="config-section">
