@@ -1218,9 +1218,19 @@ def _resolve_audio_for_sim(audio_id: str) -> Path | None:
       media/media_123 / intro/t-rex/long/1  → 从 S3/HTTP 缓存
       tts/{db_id}                            → 从 ZebGeneratedAudio 表读取本地路径
       /abs/path/to/file.mp3                  → 直接返回本地路径
+      /mnt/d/path/to/file.mp3                → WSL 路径自动转换为 Windows 路径
     """
     if not audio_id:
         return None
+
+    # WSL 路径转换：/mnt/d/... → D:\...
+    if audio_id.startswith("/mnt/") and len(audio_id) > 6 and audio_id[5].isalpha():
+        parts = audio_id[6:].lstrip("/").split("/")
+        drive = audio_id[5].upper()
+        win_path = Path(f"{drive}:\\" + "\\".join(parts))
+        if win_path.exists():
+            return win_path
+        # 也尝试原始路径（可能是 Linux 环境）
 
     # 直接路径（以 / 或盘符开头）
     if audio_id.startswith("/") or (len(audio_id) > 2 and audio_id[1] == ":"):
