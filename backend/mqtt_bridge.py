@@ -83,6 +83,7 @@ class SimulationResult:
     e2e_latency_ms: int = 0
     done_latency_ms: int = 0
     reply_text: str = ""
+    all_commands: list = field(default_factory=list)
     backend_responses: list = field(default_factory=list)
     error: str = ""
     _event_log: list = field(default_factory=list)
@@ -91,6 +92,25 @@ class SimulationResult:
     stt_texts: list = field(default_factory=list)
     vad_bypassed: bool = False
     vad_blocked_warning: str = ""
+
+
+def _extract_reply_text(commands: list[dict]) -> str:
+    """从 MQTT 命令列表中提取 LLM 回复文本。
+
+    优先级：
+    1. `text` 字段 — chatbot 在对话模式下可能携带的 LLM 回复文本
+    2. `cmd` 字段 — 语音命令文本（fallback）
+
+    返回最后一个命中的文本（与原有行为一致：取最后一条命令）。
+    """
+    reply = ""
+    for cmd in commands:
+        text = cmd.get("text") or cmd.get("reply") or ""
+        if text:
+            reply = text
+        elif cmd.get("cmd"):
+            reply = cmd["cmd"]
+    return reply
 
 
 def _resolve_mqtt_host() -> str:
@@ -791,10 +811,10 @@ class ConnectedDevice:
             result.stt_text = "\n".join(self._fw.get_stt_texts())
             result.stt_texts = self._fw.get_stt_texts()
             result.cue_count = self._fw._cue_counter
-            result.commands_received = len(self._fw.get_all_commands())
-            for cmd in self._fw.get_all_commands():
-                if cmd.get("cmd"):
-                    result.reply_text = cmd["cmd"]
+            commands = self._fw.get_all_commands()
+            result.commands_received = len(commands)
+            result.all_commands = commands
+            result.reply_text = _extract_reply_text(commands)
 
             downstream = self._fw.get_downstream_stats()
             result.tts_response_count = downstream["tts_response_count"]
@@ -832,6 +852,7 @@ class ConnectedDevice:
                 "total_chunks": result.total_chunks,
                 "stt_text": result.stt_text,
                 "reply_text": result.reply_text,
+                "all_commands": result.all_commands,
                 "tts_response_count": result.tts_response_count,
                 "tts_chunks": result.tts_chunks,
                 "tts_duration_ms": result.tts_duration_ms,
@@ -932,15 +953,15 @@ class ConnectedDevice:
             result.stt_text = "\n".join(self._fw.get_stt_texts())
             result.stt_texts = self._fw.get_stt_texts()
             result.cue_count = self._fw._cue_counter
-            result.commands_received = len(self._fw.get_all_commands())
+            commands = self._fw.get_all_commands()
+            result.commands_received = len(commands)
+            result.all_commands = commands
 
             if self._fw._session_stt_texts:
                 result.stt_confidence = 0.0
                 result.stt_language = ""
 
-            for cmd in self._fw.get_all_commands():
-                if cmd.get("cmd"):
-                    result.reply_text = cmd["cmd"]
+            result.reply_text = _extract_reply_text(commands)
 
             # Collect downstream TTS tracking data
             downstream = self._fw.get_downstream_stats()
@@ -966,6 +987,7 @@ class ConnectedDevice:
                 "total_chunks": result.total_chunks,
                 "stt_text": result.stt_text,
                 "reply_text": result.reply_text,
+                "all_commands": result.all_commands,
                 "tts_response_count": result.tts_response_count,
                 "tts_chunks": result.tts_chunks,
                 "tts_duration_ms": result.tts_duration_ms,

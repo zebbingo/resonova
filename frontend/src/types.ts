@@ -160,7 +160,7 @@ export interface TTSGenerateRequest {
 /** TTS 生成响应（含生成单条的结果） */
 export interface TTSGenerateResponse {
   success: boolean
-  id: number | null
+  id: number | string | null
   name: string
   text: string
   gender: string

@@ -145,7 +145,7 @@ export async function deleteGeneratedVoice(id: number): Promise<{ success: boole
 }
 
 /** 获取已生成语音的播放 URL */
-export function generatedAudioUrl(id: number): string {
+export function generatedAudioUrl(id: number | string): string {
   return `${BASE}/api/tts/audio/${id}`
 }
 

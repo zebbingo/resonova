@@ -1,0 +1,1 @@
+﻿// Frontend types WITHOUT backend model: AudioItem, AudioListResponse, FigurineConfig, GeneratedVoice, SttResult, TTSBatchResponse, TTSGenerateRequest, TTSGenerateResponse, TTSListResponse, TTSOptionItem, TTSOptionsResponse, TTSParams, TTSPreset, TTSRange, VadSegment, VadSttResult
