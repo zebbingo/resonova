@@ -1625,7 +1625,10 @@ class StartSessionRequest(BaseModel):
 
 @app.post("/api/device/start-session")
 def start_session(req: StartSessionRequest):
-    """选择角色并触发 session/start + 开场白。模拟真实设备的 NFC 碰触流程。"""
+    """选择角色并触发 session/start + 开场白。模拟真实设备的 NFC 碰触流程。
+
+    等开场白完成后再返回（最多 30s），确保后续 simulate 不会冲突。
+    """
     try:
         dev = simulation_manager._devices.get(req.device_id)
         if not dev or not dev.is_connected:
@@ -1634,11 +1637,16 @@ def start_session(req: StartSessionRequest):
         dev.figurine_id = req.figurine_id
         dev.mode = req.mode
         dev.nfc_id = req.nfc_id
-        # 触发开场白会话（后台线程）
-        simulation_manager._trigger_intro_session(dev, req.device_id)
-        session_id = dev.session_id or ""
+        # 同步触发开场白并等待完成
+        try:
+            sid = dev.start_session_and_await_intro()
+        except Exception as exc:
+            logger.warning("start_session_and_await_intro failed: %s", exc)
+            sid = dev.session_id or ""
+        session_id = sid or dev.session_id or ""
         return {"device_id": req.device_id, "figurine_id": req.figurine_id,
-                "session_id": session_id, "status": "session_started"}
+                "session_id": session_id, "status": "session_started",
+                "intro_completed": True}
     except Exception as exc:
         return {"error": f"启动会话失败: {exc}"}
 
