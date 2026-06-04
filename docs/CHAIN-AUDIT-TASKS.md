@@ -12,7 +12,8 @@
 | 3 | 指令显示 | ✅ 正常 | - |
 | 4 | 设备状态同步 | ✅ 已修复 | - |
 | 5 | 会话生命周期 | ✅ 已修复 | - |
-| 6 | 前端音频播放 | 🔴 完全缺失 | 致命 |
+| 6 | 前端音频播放 | ✅ 已实现 | - |
+| 7 | 设备 WebSocket 连接 | ✅ 已验证 | - |
 
 ---
 
@@ -47,21 +48,26 @@
 **问题**: `introeos` 仅记日志，不触发状态变化  
 **修复**: 更新 state.lastSessionStatus 为 'intro_complete'
 
-#### Task 6: 设备 WebSocket 连接时机
+#### Task 6: 设备 WebSocket 连接时机 ✅
 **文件**: `frontend/src/composables/useMQTTSimulation.ts` → `connectDevice()`  
-**检查**: 设备 WebSocket 是否在 connectDevice 时正确建立并持续监听
+**检查**: 设备 WebSocket 是否在 connectDevice 时正确建立并持续监听  
+**验证**: WebSocket 在 connectDevice 时建立（L330-340），包含 onmessage/onclose 处理，keepalive 机制已启动
 
 ### P2 — 音频播放（独立 feature）
 
-#### Task 7: 后端音频数据转发
-**文件**: `backend/scripts/device_firmware.py` + `backend/mqtt_bridge.py`  
-**方案**: 
-  - 方案 A: 前端通过 HTTP 获取音频文件（最简单，适合测试平台）
-  - 方案 B: WebSocket 二进制帧传输（复杂，适合生产）
-  - 方案 C: 保存为临时文件，返回 URL（推荐，平衡复杂度）
+#### Task 7: 后端音频数据转发 ✅
+**文件**: `backend/scripts/device_firmware.py` + `backend/server.py`  
+**实现**:  
+  - `device_firmware.py`: `_decode_and_save_audio()` 解码 Opus→PCM→WAV，保存到 `.audio_cache`
+  - `server.py`: `/api/sim-audio/{filename}` 端点提供音频文件下载
+  - `device_firmware.py`: 发射 `audio_ready` 事件（含 turn_id, url, chunks, duration_ms）
 
-#### Task 8: 前端音频播放组件
-**方案**: 新建 `AudioPlayer.vue`，使用 HTML5 Audio 或 Web Audio API
+#### Task 8: 前端音频播放组件 ✅
+**文件**: `frontend/src/composables/useMQTTSimulation.ts`  
+**实现**:  
+  - 处理 `audio_ready` 事件（L757-771）
+  - 自动创建 `Audio` 元素并播放
+  - 记录日志到 SessionLog
 
 ---
 

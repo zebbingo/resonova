@@ -68,6 +68,7 @@ _IDENTITY_DIR = Path(__file__).resolve().parent / "devices"
 
 _SESSION_HB_INTERVAL = 60
 _DEVICE_HB_INTERVAL = 30
+_AUDIO_CACHE_DIR = Path(__file__).resolve().parent.parent / ".audio_cache"
 
 
 def _is_local_or_private_host(host: str) -> bool:
@@ -749,6 +750,9 @@ class DeviceFirmware:
             tracker.eos_event.set()
             tracker.tts_eos_at = time.time()
 
+            # ── Decode Opus → WAV and emit audio_ready for all turns ──
+            audio_url = self._decode_and_save_audio(turn_id, tracker.audio_data)
+
             if turn_id == "0":
                 self._intro_audio_eos_event.set()
                 self._log("[FW] intro audio EOS")
@@ -757,10 +761,24 @@ class DeviceFirmware:
                         "state": "complete",
                         "turn_id": "0",
                     })
+                    if audio_url:
+                        self._on_mqtt_event("audio_ready", {
+                            "turn_id": "0",
+                            "url": audio_url,
+                            "chunks": tracker.chunks_received,
+                            "duration_ms": int(tracker.chunks_received * _OPUS_FRAME_MS),
+                        })
             elif self._is_cue_turn_id(turn_id):
                 self._log(f"[FW] cue audio EOS turn={turn_id}")
                 if self.on_cue_audio:
                     self.on_cue_audio(turn_id, tracker.audio_data)
+                if self._on_mqtt_event and audio_url:
+                    self._on_mqtt_event("audio_ready", {
+                        "turn_id": turn_id,
+                        "url": audio_url,
+                        "chunks": tracker.chunks_received,
+                        "duration_ms": int(tracker.chunks_received * _OPUS_FRAME_MS),
+                    })
             else:
                 self._log(f"[FW] TTS EOS turn={turn_id} total_seq={tracker.eos_total_seq}")
                 if self._on_mqtt_event:
@@ -768,6 +786,13 @@ class DeviceFirmware:
                         "state": "complete",
                         "turn_id": turn_id,
                     })
+                    if audio_url:
+                        self._on_mqtt_event("audio_ready", {
+                            "turn_id": turn_id,
+                            "url": audio_url,
+                            "chunks": tracker.chunks_received,
+                            "duration_ms": int(tracker.chunks_received * _OPUS_FRAME_MS),
+                        })
 
             self.send_done(turn_id, played_seq=tracker.chunks_received)
 
@@ -799,6 +824,35 @@ class DeviceFirmware:
                 self._on_mqtt_event("introeos", {
                     "turn_id": turn_id,
                 })
+
+    def _decode_and_save_audio(self, turn_id: str, opus_chunks: list[bytes]) -> Optional[str]:
+        """Decode accumulated Opus chunks → PCM → WAV file. Returns file URL path or None."""
+        if not opus_chunks:
+            return None
+        try:
+            pcm_frames = []
+            for chunk in opus_chunks:
+                pcm = pcm_utils.decode_opus(chunk)
+                pcm_frames.append(pcm)
+            pcm_all = np.concatenate(pcm_frames)
+
+            _AUDIO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+            token = secrets.token_urlsafe(8)[:12]
+            filename = f"{self.device_id}_{turn_id}_{token}.wav"
+            wav_path = _AUDIO_CACHE_DIR / filename
+
+            import wave
+            with wave.open(str(wav_path), "wb") as wf:
+                wf.setnchannels(pcm_utils.PCM_CHANNELS)
+                wf.setsampwidth(2)  # int16 = 2 bytes
+                wf.setframerate(pcm_utils.PCM_SR)
+                wf.writeframes(pcm_all.tobytes())
+
+            self._log(f"[FW] audio saved: {filename} ({len(pcm_all)} samples, {len(opus_chunks)} chunks)")
+            return f"/api/sim-audio/{filename}"
+        except Exception as exc:
+            self._log(f"[FW] audio decode/save failed: {exc}")
+            return None
 
     def _handle_command_message(self, short: str, msg):
         try:

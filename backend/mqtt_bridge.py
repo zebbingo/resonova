@@ -1037,6 +1037,9 @@ class ConnectedDevice:
         sid = self.session_id
         if sid:
             self._emit_session(sid, event_type, data)
+        # Also emit to device queue for events the frontend needs directly
+        if event_type in ("audio_ready", "tts_synthesis", "audio_start", "audio_chunk"):
+            self._emit_device(event_type, data)
 
     def _load_wav(self, wav_path: Path):
         import numpy as np

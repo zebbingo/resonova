@@ -108,6 +108,7 @@ export interface DeviceSimulationState {
   lastSessionStatus?: string
   lastSttText?: string
   lastReplyText?: string
+  lastAudioUrl?: string
 
   activeTurns: TurnInfo[]
   commands: CommandInfo[]
@@ -178,6 +179,7 @@ export function useMQTTSimulation() {
     lastSessionStatus: undefined,
     lastSttText: undefined,
     lastReplyText: undefined,
+    lastAudioUrl: undefined,
 
     activeTurns: [],
     commands: [],
@@ -751,6 +753,30 @@ export function useMQTTSimulation() {
           // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻柡澶嗘櫅閳ь剛鍠栭崵瀣槈閹炬剚鍎撴い?chunk
           deviceSM.incrementReceivedChunks()
           addLog('down', topic, payload, 'audio_chunk', extractedTurnId)
+        }
+        break
+
+      case 'audio_ready':
+        // DeviceFirmware decoded Opus→PCM→WAV, URL ready for playback
+        if (payload?.url) {
+          const turnId = payload.turn_id || 'unknown'
+          addLog('down', 'Audio Ready', {
+            turn_id: turnId,
+            url: payload.url,
+            chunks: payload.chunks,
+            duration_ms: payload.duration_ms,
+          }, 'audio_ready', turnId)
+          // Auto-play: create Audio element and play
+          try {
+            const audio = new Audio(payload.url)
+            audio.volume = 1.0
+            audio.play().catch(() => {
+              console.warn('[Audio] Autoplay blocked, URL:', payload.url)
+            })
+            state.lastAudioUrl = payload.url
+          } catch (err) {
+            console.error('[Audio] Playback failed:', err)
+          }
         }
         break
 

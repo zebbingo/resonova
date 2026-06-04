@@ -2609,6 +2609,17 @@ def tts_serve_audio(audio_id: str):
     return {"error": "音频不存在"}
 
 
+@app.get("/api/sim-audio/{filename}")
+def sim_audio_serve(filename: str):
+    """提供模拟器解码后的音频文件（DeviceFirmware Opus→PCM→WAV）。"""
+    from pathlib import Path
+    audio_dir = Path(__file__).resolve().parent / ".audio_cache"
+    file_path = audio_dir / filename
+    if not file_path.exists():
+        return {"error": "Audio file not found"}
+    return FileResponse(str(file_path), media_type="audio/wav")
+
+
 @app.delete("/api/tts/generated/{audio_id}")
 def tts_delete_generated(audio_id: int):
     """删除一条生成语音记录（软删除）。"""
