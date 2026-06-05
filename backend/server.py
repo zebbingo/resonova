@@ -2311,7 +2311,7 @@ def _translate_ws_event(event: dict) -> dict:
         translated["type"] = "session_complete"
         return translated
     # ── Pipeline 关键事件：DeviceFirmware 发出，前端约定同名处理，显式透传 ──
-    elif ev_type in ("stt_inference", "tts_synthesis", "llm_inference", "introeos",
+    elif ev_type in ("stt_inference", "tts_synthesis", "llm_inference", "llm_text", "introeos",
                      "audio_ready", "device_state", "device_error"):
         return event
     return event
@@ -3357,6 +3357,25 @@ async def websocket_monitoring(websocket: WebSocket):
                 import json
                 raw_event = json.loads(data)
                 
+                # 转发 llm_text 事件给 device_firmware（通过 EventBus + 直接注入）
+                event_type = raw_event.get("type", "")
+                if event_type == "llm_text":
+                    session_id = raw_event.get("session_id", "")
+                    text = raw_event.get("text", "")
+                    chunk = raw_event.get("chunk", True)
+                    if session_id:
+                        simulation_manager.event_bus.publish(session_id, {
+                            "type": "llm_text",
+                            "text": text,
+                            "chunk": chunk,
+                            "session_id": session_id,
+                        })
+                        # Also inject into device firmware for reply_text collection
+                        for dev in simulation_manager._devices.values():
+                            if dev.session_id == session_id and dev._fw:
+                                dev._fw.collect_llm_text(text, chunk)
+                                break
+                
                 # 评估和转换事件
                 transformed_event = _evaluate_and_transform_event(raw_event)
                 
@@ -3419,6 +3438,8 @@ def _evaluate_and_transform_event(raw_event: dict) -> dict:
         transformed = _transform_stt_event(transformed)
     elif event_type == "llm_inference":
         transformed = _transform_llm_event(transformed)
+    elif event_type == "llm_text":
+        pass  # LLM text chunk — forwarded to device_firmware via EventBus
     elif event_type == "tts_synthesis":
         transformed = _transform_tts_event(transformed)
     elif event_type == "intro_start" or event_type == "intro_end":

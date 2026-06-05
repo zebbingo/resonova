@@ -243,6 +243,7 @@ class DeviceFirmware:
         self._commands: list[dict] = []
         self._pending_after_audio: dict[str, list[dict]] = {}
         self._session_stt_texts: list[str] = []
+        self._llm_text_parts: list[str] = []
         self._last_error = ""
 
         self._hb_thread: Optional[threading.Thread] = None
@@ -591,6 +592,22 @@ class DeviceFirmware:
     def get_stt_texts(self) -> list[str]:
         with self._lock:
             return list(self._session_stt_texts)
+
+    def collect_llm_text(self, text: str, chunk: bool = True):
+        """Collect LLM text from monitoring hook events."""
+        with self._lock:
+            if not chunk:
+                # End of response marker
+                pass
+            else:
+                self._llm_text_parts.append(text)
+
+    def get_llm_reply(self) -> str:
+        """Return accumulated LLM reply text and clear buffer."""
+        with self._lock:
+            text = "".join(self._llm_text_parts)
+            self._llm_text_parts = []
+            return text
 
     def get_downstream_stats(self) -> dict:
         """Aggregate downstream TTS statistics across all active turns.

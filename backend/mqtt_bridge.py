@@ -819,7 +819,7 @@ class ConnectedDevice:
             commands = self._fw.get_all_commands()
             result.commands_received = len(commands)
             result.all_commands = commands
-            result.reply_text = _extract_reply_text(commands)
+            result.reply_text = _extract_reply_text(commands) or self._fw.get_llm_reply()
 
             downstream = self._fw.get_downstream_stats()
             result.tts_response_count = downstream["tts_response_count"]
