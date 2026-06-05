@@ -518,6 +518,11 @@ export function useMQTTSimulation() {
       throw new Error('audioId is required')
     }
 
+    // 确保 session WebSocket 已连接
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      _ensureSessionWs()
+    }
+
     const resp = await axios.post('/api/device/send-turn', {
       device_id: _deviceId,
       audio_id: audioId,
@@ -531,7 +536,41 @@ export function useMQTTSimulation() {
     if (sessionId) {
       state.sessionId = sessionId
     }
+    // 确保 session WebSocket 连接的是最新 session
+    _ensureSessionWs()
     return data
+  }
+
+  /** 确保 session WebSocket 已连接到当前 session_id。 */
+  function _ensureSessionWs() {
+    if (!state.sessionId) return
+    // 已连接且 session 匹配则跳过
+    if (ws && ws.readyState === WebSocket.OPEN) return
+    // 关闭旧连接
+    if (ws) {
+      try { ws.close() } catch {}
+      ws = null
+    }
+    const wsUrl = `ws://${window.location.host}/ws/session/${state.sessionId}`
+    ws = new WebSocket(wsUrl)
+    ws.onopen = () => {
+      console.log('[WebSocket] Session WS connected:', state.sessionId)
+      addLog('up', 'WebSocket connected', {}, 'other')
+    }
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data)
+        _handleWsMessage(data)
+      } catch (err) {
+        console.error('[WebSocket] Parse error:', err)
+      }
+    }
+    ws.onerror = () => {
+      console.warn('[WebSocket] Session WS error')
+    }
+    ws.onclose = () => {
+      console.log('[WebSocket] Session WS closed')
+    }
   }
 
   /**
@@ -560,6 +599,8 @@ export function useMQTTSimulation() {
         state.sessionId = resp.data.session_id
       }
       addLog('up', 'session/start', { figurineId: config.figurineId, mode: config.mode, session_id: state.sessionId }, 'session_start')
+      // 连接 session WebSocket 以接收实时事件（STT/LLM/TTS）
+      _ensureSessionWs()
       return resp.data
     } catch (error: any) {
       state.errorMessage = error.response?.data?.error || error.message
