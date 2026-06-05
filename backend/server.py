@@ -211,22 +211,29 @@ CACHE_DIR = Path(__file__).parent / "audio_cache"
 
 
 def _normalize_audio_path(path: str) -> Path:
-    """将可能为 Windows 路径的 audio_path 转为当前平台可访问的 Path。
+    """将 audio_path 转为当前平台可访问的 Path。
 
-    当后端从 Windows 迁移到 WSL 时，数据库中遗留的 ``D:\\...`` 路径需要
-    转为 ``/mnt/d/...`` 才能被 Path.exists() / FileResponse 正常使用。
+    支持双向转换：
+    - WSL 上：D:\\... → /mnt/d/...
+    - Windows 上：/mnt/d/... → D:\\...
     """
     p = Path(path)
     if p.exists():
         return p
-    # 尝试将 Windows 盘符路径（D:\...）转为 WSL 路径（/mnt/d/...）
+    # WSL 路径转 Windows：/mnt/d/... → D:\...
+    if path.startswith("/mnt/") and len(path) > 6 and path[5].isalpha():
+        drive = path[5].upper()
+        rest = path[6:].replace('/', '\\')
+        win_path = Path(f"{drive}:{rest}")
+        if win_path.exists():
+            return win_path
+    # Windows 路径转 WSL：D:\... → /mnt/d/...
     if len(path) >= 3 and path[1] == ':':
         drive = path[0].lower()
         rest = path[2:].replace('\\', '/')
-        wsl_path = f"/mnt/{drive}{rest}"
-        wsl_p = Path(wsl_path)
-        if wsl_p.exists():
-            return wsl_p
+        wsl_path = Path(f"/mnt/{drive}{rest}")
+        if wsl_path.exists():
+            return wsl_path
     return p
 
 # ── 前端静态文件 ────────────────────────────────────────────

@@ -759,8 +759,13 @@ class ConnectedDevice:
             raise ConnectionError(f"Device {self.device_id} is not connected")
 
         if not self._fw.session_id:
-            logger.info("Device %s has no active session, auto-starting new session for send_user_turn", self.device_id)
-            self._fw.start_session(
+            # fw session 可能被内部线程或 bot 侧关闭，用 dev session_id 恢复
+            if self.session_id:
+                logger.info("[send_user_turn] Restoring fw session from dev.session_id=%s", self.session_id)
+                self._fw.session_id = self.session_id
+            else:
+                logger.info("Device %s has no active session, auto-starting new session for send_user_turn", self.device_id)
+                self._fw.start_session(
                 figurine_id=self.figurine_id,
                 nfc_id=self.nfc_id,
                 mode=self.mode,
@@ -1497,7 +1502,7 @@ class SimulationManager:
         real_sid = session_id_holder["value"]
         if real_sid and real_sid != preliminary_id:
             self.event_bus.alias_queue(preliminary_id, real_sid)
-        return {"session_id": preliminary_id, "status": "turn_started"}
+        return {"session_id": real_sid or preliminary_id, "status": "turn_started"}
 
     def run_simulation(
         self,
