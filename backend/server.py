@@ -1662,7 +1662,7 @@ class StartSessionRequest(BaseModel):
 def start_session(req: StartSessionRequest):
     """选择角色并触发 session/start + 开场白。模拟真实设备的 NFC 碰触流程。
 
-    非阻塞：立即返回 session_id，intro 在后台完成，前端通过 WS 事件接收状态。
+    等开场白完成后再返回（最多 30s），确保后续 simulate 不会冲突。
     """
     try:
         dev = simulation_manager._devices.get(req.device_id)
@@ -1672,9 +1672,9 @@ def start_session(req: StartSessionRequest):
         dev.figurine_id = req.figurine_id
         dev.mode = req.mode
         dev.nfc_id = req.nfc_id
-        # 非阻塞：启动 intro 后立即返回
+        # 同步触发开场白并等待完成
         try:
-            sid = dev.start_session_async()
+            sid = dev.start_session_and_await_intro()
         except Exception as exc:
             logger.warning("start_session_and_await_intro failed: %s", exc)
             sid = dev.session_id or ""
