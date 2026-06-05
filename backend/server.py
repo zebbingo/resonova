@@ -3360,21 +3360,20 @@ async def websocket_monitoring(websocket: WebSocket):
                 # 转发 llm_text 事件给 device_firmware（通过 EventBus + 直接注入）
                 event_type = raw_event.get("type", "")
                 if event_type == "llm_text":
-                    session_id = raw_event.get("session_id", "")
                     text = raw_event.get("text", "")
                     chunk = raw_event.get("chunk", True)
-                    if session_id:
-                        simulation_manager.event_bus.publish(session_id, {
-                            "type": "llm_text",
-                            "text": text,
-                            "chunk": chunk,
-                            "session_id": session_id,
-                        })
-                        # Also inject into device firmware for reply_text collection
-                        for dev in simulation_manager._devices.values():
-                            if dev.session_id == session_id and dev._fw:
-                                dev._fw.collect_llm_text(text, chunk)
-                                break
+                    session_id = raw_event.get("session_id", "")
+                    # Inject into ALL active device firmwares (session_id may be absent)
+                    for dev in simulation_manager._devices.values():
+                        if dev._fw and dev._simulating:
+                            dev._fw.collect_llm_text(text, chunk)
+                            if session_id:
+                                simulation_manager.event_bus.publish(session_id, {
+                                    "type": "llm_text",
+                                    "text": text,
+                                    "chunk": chunk,
+                                    "session_id": session_id,
+                                })
                 
                 # 评估和转换事件
                 transformed_event = _evaluate_and_transform_event(raw_event)
