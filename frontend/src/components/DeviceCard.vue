@@ -535,6 +535,12 @@ async function handleConnect() {
       ...getBrokerConfig(),
     })
     completeStep('device', '设备连接', `${deviceId.value} 已上线`)
+    // 连接成功后如果已选角色，自动触发 session/start（NFC 碰触）
+    if (figurineId.value && !isSimulating.value) {
+      startSession({ figurineId: figurineId.value, mode: mode.value }).catch(err => {
+        console.warn('[Auto-NFC] 连接后自动启动会话失败:', err.message)
+      })
+    }
   } catch (err: any) {
     failStep('device', '设备连接', err.message || '连接失败')
   }
