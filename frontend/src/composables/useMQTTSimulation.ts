@@ -458,14 +458,16 @@ export function useMQTTSimulation() {
       state.status = 'active'
       state.fwVersion = resp.data.fw_version || '1.6.0'
 
-      addLog('up', 'session/start', {
-        session_id: state.sessionId,
-        character: config.figurineId,
-        mode: config.mode,
-      }, 'session_start')
+      // 只在 session_id 有效时连接 WS
+      if (state.sessionId) {
+        addLog('up', 'session/start', {
+          session_id: state.sessionId,
+          character: config.figurineId,
+          mode: config.mode,
+        }, 'session_start')
 
-      const wsUrl = `ws://${window.location.host}/ws/session/${state.sessionId}`
-      ws = new WebSocket(wsUrl)
+        const wsUrl = `ws://${window.location.host}/ws/session/${state.sessionId}`
+        ws = new WebSocket(wsUrl)
 
       ws.onopen = () => {
         console.log('[WebSocket] Connected')
@@ -498,6 +500,7 @@ export function useMQTTSimulation() {
           state.isOnline = false
         }
       }
+      } // end if (state.sessionId)
     } catch (error: any) {
       console.error('[Simulation] Start failed:', error)
       state.errorMessage = error.response?.data?.detail || error.message
