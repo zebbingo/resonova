@@ -238,12 +238,12 @@ export function useMQTTSimulation() {
   let _keepaliveTimer: ReturnType<typeof setInterval> | null = null
   let _onEvictedCallback: ((deviceId: string) => void) | null = null
 
-  /** 濠电偛顦崝宀勫船閻ｅ本濯奸柟顖嗗本校闂佹悶鍎抽崑鐐哄极瑜版帒鐐婇柣鎰濞堝爼鏌ㄥ☉妯煎ⅱ闁?DeviceManager 闁荤姳绀佹晶浠嬫偪閸℃稒鏅?*/
+  /** 注册设备驱逐回调，由 DeviceManager 触发 */
   function onDeviceEvicted(cb: (deviceId: string) => void) {
     _onEvictedCallback = cb
   }
 
-  /** 濠?15 缂備礁顦扮敮鎺楀箖濠婂牆瑙﹂幖杈剧秵娴煎倿鏌涘▎鎰伌闁?keepalive闂佹寧绋戦惌鍌毼ｇ拠宸桨闁靛骏缍嗛崯搴☆熆鐠虹儤绌挎い顐畵瀹曞爼鎮欑€涙ɑ姣?*/
+  /** 每 15 秒发送 keepalive，防止设备超时断开 */
   function _startKeepalive() {
     _stopKeepalive()
     _keepaliveTimer = setInterval(async () => {
@@ -263,7 +263,7 @@ export function useMQTTSimulation() {
     }
   }
 
-  /** 闁哄鏅濋崑鐐垫暜鐎电瀵查柤濮愬€楅崺鐘电磼?/ws/system闂佹寧绋戦張顒傛暜閹绢喖缁?device_evicted 缂備焦绋戦ˇ鐢稿焵椤掍焦鐨戦柣?*/
+  /** 连接 /ws/system 监听 device_evicted 等全局事件 */
   function connectSystemWS() {
     if (systemWs) {
       systemWs.close()
@@ -287,7 +287,7 @@ export function useMQTTSimulation() {
         } catch { /* ignore parse errors */ }
       }
       systemWs.onclose = () => {
-        // 2s 闂佸憡鑹鹃柊锝夊闯閸涘﹥浜?
+        // 2s 后重连
         setTimeout(() => { connectSystemWS() }, 2000)
       }
     } catch { /* ignore */ }
@@ -330,7 +330,7 @@ export function useMQTTSimulation() {
     isConnecting.value = true
     _deviceId = config.deviceId
 
-    // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻梺鎸庣⊕閻″瓗FLINE 闂?CONNECTING
+    // 状态转换：OFFLINE → CONNECTING
     deviceSM.transitionTo(DeviceState.CONNECTING, {
       deviceId: config.deviceId,
       figurineId: config.figurineId,
@@ -354,7 +354,7 @@ export function useMQTTSimulation() {
       state.status = 'active'
       isConnected.value = true
 
-      // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻梺鎸庣⊕椤戝栋NNECTING 闂?IDLE
+      // 状态转换：CONNECTING → IDLE
       deviceSM.transitionTo(DeviceState.IDLE)
       addLog('up', 'device/power_on', { device_id: config.deviceId }, 'session_start')
 
@@ -367,12 +367,12 @@ export function useMQTTSimulation() {
         } catch {}
       }
       deviceWs.onclose = () => {
-        // 婵炴垶鎸哥粔鎾疮閳ь剛绱掗弬娆惧剰鐎规挸妫濆浠嬪炊椤忓秴鏁圭紓浣稿€藉畷鐢稿吹?闂?keepalive 闂佸綊鏅查懗鍫曟偨婵犳艾绀嗛梺鍨儐閻撯偓闂佸憡鐟崹璺何ｇ拠宸桨?cleanup 缂備焦宕樺▔鏇㈠煝婵傜鐐婇柣鎰摠閺?        // 闂佸憡鎸哥粔鍫曨敂椤掑嫬鐭楁い鏍ㄦ皑濮ｏ箓鎮归崶銊︾闁革絾鎮傚顒勬偋閸績鍙洪悗娈垮枓閸?WS
+        // 连接断开，停止 keepalive 和 cleanup
       }
 
-      // 闂佸啿鍘滈崑鎾绘煃閸忓浜?Keepalive 濠?15s 闂佸憡甯￠弨閬嶅蓟婵犲嫭濯奸柟顖嗗本校濠电偛寮跺Σ鎺旂矚椤掑嫬绫嶉柛顐ｆ礃閿?闂佸啿鍘滈崑鎾绘煃閸忓浜?      _startKeepalive()
+      // 启动 Keepalive（15s 间隔），防止设备超时
 
-      // 闂佸啿鍘滈崑鎾绘煃閸忓浜?闁哄鏅濋崑鐐垫暜鐎电瀵查柤濮愬€楅崺鐘裁瑰鍐惧剮婵炲棎鍨洪敍鎰板箣閿斿灝顥氶梺鎸庣☉閺堫剛鏁幘顔肩哗?device_evicted 闂備緡鍋呭銊╂偂?闂佸啿鍘滈崑鎾绘煃閸忓浜?      connectSystemWS()
+      // 连接系统 WS 以接收 device_evicted 等全局事件
     } catch (error: any) {
       state.errorMessage = error.response?.data?.error || error.message
       state.status = 'error'
@@ -403,7 +403,7 @@ export function useMQTTSimulation() {
     state.lastSttText = undefined
     state.lastReplyText = undefined
 
-    // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻梺鎸庣⊕椤戞—LE 闂?OFFLINE
+    // 状态转换：IDLE → OFFLINE
     deviceSM.transitionTo(DeviceState.OFFLINE)
   }
 
@@ -428,7 +428,7 @@ export function useMQTTSimulation() {
     logs.value = []
     sttResult.value = null
 
-    // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻梺鎸庣⊕椤戞—LE 闂?SESSION_ACTIVE
+    // 状态转换：IDLE → SESSION_ACTIVE
     deviceSM.transitionTo(DeviceState.SESSION_ACTIVE, {
       sessionMode: config.mode as SessionMode,
       figurineId: config.figurineId,
@@ -846,7 +846,7 @@ export function useMQTTSimulation() {
             const turn = _findTurn(extractedTurnId)
             if (turn) turn.chunksReceived++
           }
-          // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻柡澶嗘櫅閳ь剛鍠栭崵瀣槈閹炬剚鍎撴い?chunk
+          // 累计 chunk 数量
           deviceSM.incrementReceivedChunks()
           addLog('down', topic, payload, 'audio_chunk', extractedTurnId)
         }
@@ -899,7 +899,7 @@ export function useMQTTSimulation() {
             _upsertTurn(extractedTurnId, 'user', { state: 'thinking', endTime: new Date() })
           }
           state.status = 'active'
-          // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻梺鎸庣⊕閻喚绮崒婊勫仒鐎光偓閸曨厼寰撴俊顐ゅ閸ㄥ湱鍒掗妸鈺佺骇?闂?WAITING
+          // 状态转换：→ WAITING
           deviceSM.transitionTo(DeviceState.WAITING)
           addLog('up', topic, payload, 'eos', extractedTurnId)
         } else {
@@ -978,7 +978,7 @@ export function useMQTTSimulation() {
         }
         state.commands.push(cmdInfo)
         if (state.commands.length > MAX_COMMANDS) state.commands.shift()
-        // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻柡澶嗘櫅閳ь剛鍠栭崵瀣煙缁嬫寧鐭楅柟?        deviceSM.incrementCommands()
+        // 命令计数
         addLog('down', topic, payload, cmdInfo.preempt ? 'command_preempt' : 'command', extractedTurnId)
         _setLiveTrace(
           cmdInfo.cmd ? 'Command: ' + cmdInfo.cmd : 'Command',
@@ -1079,16 +1079,16 @@ export function useMQTTSimulation() {
     }
     isSimulating.value = false
     state.heartbeatActive = false
-    // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻梺鎸庣⊕閼归箖宕㈠☉姘皫闁哄鐏濋悡?SESSION_ENDED闂佹寧绋戦悧鍡涘触鐎ｎ兘鍋?CAPTURING / WAITING / SESSION_ACTIVE闂?
+    // 状态转换：SESSION_ENDED → CAPTURING / WAITING / SESSION_ACTIVE
     deviceSM.transitionTo(DeviceState.SESSION_ENDED)
     if (isConnected.value) {
       state.status = 'active'
-      // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻梺鎸庣⊕閻℃摗SSION_ENDED 闂?IDLE闂佹寧绋戦悧鎰邦敊閺囩喎绶為柛銉閻繈鏌涢敂鍝勫闁搞倕閰ｉ弫?
+      // 状态转换：SESSION_ENDED → IDLE（无后续操作）
       deviceSM.transitionTo(DeviceState.IDLE)
     } else {
       state.isOnline = false
       state.status = 'idle'
-      // 闂佺粯顭堥崺鏍焵椤戣法鍔嶆繝褉鍋撻梺鎸庣⊕椤戞—LE 闂?OFFLINE
+      // 状态转换：IDLE → OFFLINE
       deviceSM.transitionTo(DeviceState.OFFLINE)
     }
     state.sessionId = undefined
