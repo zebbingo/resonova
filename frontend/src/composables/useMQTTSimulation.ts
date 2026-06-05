@@ -685,6 +685,20 @@ export function useMQTTSimulation() {
         }
         break
 
+      case 'llm_text':
+        // 从 monitoring 钩子收到的 LLM 回复文本
+        {
+          const text = data.text || ''
+          if (text) {
+            addLog('down', 'Pipeline/LLM Text', { text }, 'llm_text', turnId)
+            _setLiveTrace(
+              `LLM: ${text.slice(0, 80)}`,
+              { lastReplyText: text, lastSessionStatus: 'llm_text' },
+            )
+          }
+        }
+        break
+
       case 'tts_synthesis':
         addLog('down', 'Pipeline/TTS', { status: data.status ?? (data.state === 'complete' ? 'success' : data.state), duration_ms: data.duration_ms, chunk_count: data.chunk_count }, 'tts_synthesis', turnId)
         _setLiveTrace(
