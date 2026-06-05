@@ -681,6 +681,62 @@ class ConnectedDevice:
         self._stop_requested = True
         self.stop_current_session()
 
+    def start_session_async(self) -> Optional[str]:
+        """Start a session and trigger intro in background. Returns session_id immediately."""
+        if not self._connected or not self._fw:
+            logger.warning("Device %s not connected, cannot start intro session", self.device_id)
+            return None
+
+        with self._lock:
+            self._simulating = True
+
+        try:
+            self._fw.start_session(
+                figurine_id=self.figurine_id,
+                nfc_id=self.nfc_id,
+                mode=self.mode,
+            )
+            session_id = self._fw.session_id
+            self.session_id = session_id
+            self.touch_seen()
+            logger.info("Async intro session started: %s", session_id)
+
+            self._emit_session(session_id, "session_status", {
+                "status": "active",
+                "session_id": session_id,
+            })
+            self._emit_session(session_id, "intro", {"status": "intro_playing"})
+            self._emit_device("intro", {"status": "intro_playing", "session_id": session_id})
+
+            # Start background thread to wait for intro completion
+            def _intro_bg():
+                try:
+                    intro_ok = self._fw.wait_for_intro_completion(timeout=30)
+                    if intro_ok:
+                        logger.info("Intro EOS received for session %s", session_id)
+                        self._emit_session(session_id, "intro", {"status": "intro_complete", "session_id": session_id})
+                        self._emit_device("intro", {"status": "intro_complete", "session_id": session_id})
+                    else:
+                        logger.warning("Intro EOS timeout for session %s (30s)", session_id)
+                        self._emit_session(session_id, "intro", {"status": "intro_timeout", "session_id": session_id})
+                        self._emit_device("intro", {"status": "intro_timeout", "session_id": session_id})
+                except Exception as exc:
+                    logger.exception("Background intro wait failed: %s", exc)
+                finally:
+                    with self._lock:
+                        self._simulating = False
+
+            import threading
+            t = threading.Thread(target=_intro_bg, daemon=True, name=f"intro-bg-{self.device_id}")
+            t.start()
+
+            return session_id
+        except Exception as exc:
+            logger.exception("Async intro session failed: %s", exc)
+            with self._lock:
+                self._simulating = False
+            return None
+
     def start_session_and_await_intro(self) -> Optional[str]:
         """Start a session and wait for server intro audio to finish.
         
