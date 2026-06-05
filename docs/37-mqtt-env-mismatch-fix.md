@@ -363,4 +363,27 @@ python scripts/e2e_verify.py
 3. Send-turn session_id 与 intro session_id 一致
 4. Turn 完成：STT 识别正确 + TTS 有响应
 
+## 已知限制：reply_text 为空
+
+### 现象
+
+E2E 测试中 `reply_text` 始终为空字符串。
+
+### 根因
+
+Bot 的 MQTT 协议中，LLM 回复文本不通过 command topic 传输：
+- `response/command/<session>/<turn>` 仅携带语音命令（`play_music`、`stop` 等），格式为 `{"cmd": "...", "args": {...}}`
+- LLM 回复文本在 pipecat 内部通过 `LLMTextFrame` 直接传递给 TTS，不经过 MQTT
+- TTS 合成的音频通过 `response/audio/<session>/<turn>/chunk` 传回
+
+因此 `_extract_reply_text(commands)` 从 commands 列表中提取不到 LLM 回复文本。
+
+### 解决方案（需 bot 侧配合）
+
+在 bot 的 MQTT 输出中新增 `response/llm_text/<session>/<turn>` topic，发布 LLM 回复文本。resonova 端在 `device_firmware.py` 中订阅该 topic 并触发 `llm_text` 事件。
+
+### 当前替代方案
+
+前端通过 `llm_inference` 事件中的 `command.cmd` 字段获取命令名称（如 `dialogue`），通过 `stt_inference` 事件获取 STT 文本。这两个事件已正常工作。
+
 ## 经验教训（补充）
