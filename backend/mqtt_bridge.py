@@ -735,6 +735,10 @@ class ConnectedDevice:
                 })
                 self._emit_device("intro", {"status": "intro_timeout", "session_id": session_id})
 
+            logger.info(
+                "[start_session_and_await_intro] RETURNING: device=%s session_id=%r fw.session_id=%r dev.session_id=%r",
+                self.device_id, session_id, self._fw.session_id, self.session_id,
+            )
             return session_id
 
         except Exception as exc:
@@ -743,6 +747,10 @@ class ConnectedDevice:
             return None
 
         finally:
+            logger.info(
+                "[start_session_and_await_intro] FINALLY: device=%s fw.session_id=%r dev.session_id=%r sim=%s",
+                self.device_id, self._fw.session_id, self.session_id, self._simulating,
+            )
             with self._lock:
                 self._simulating = False
 
@@ -758,9 +766,18 @@ class ConnectedDevice:
         if not self._connected or not self._fw:
             raise ConnectionError(f"Device {self.device_id} is not connected")
 
+        logger.info(
+            "[send_user_turn] PRE-CHECK: device=%s fw.session_id=%r dev.session_id=%r connected=%s",
+            self.device_id, self._fw.session_id, self.session_id, self._connected,
+        )
         if not self._fw.session_id:
-            logger.info("Device %s has no active session, auto-starting new session for send_user_turn", self.device_id)
-            self._fw.start_session(
+            # fw session 可能被内部线程或 bot 侧关闭，用 dev session_id 恢复
+            if self.session_id:
+                logger.info("[send_user_turn] Restoring fw session from dev.session_id=%s", self.session_id)
+                self._fw.session_id = self.session_id
+            else:
+                logger.info("Device %s has no active session, auto-starting new session for send_user_turn", self.device_id)
+                self._fw.start_session(
                 figurine_id=self.figurine_id,
                 nfc_id=self.nfc_id,
                 mode=self.mode,
@@ -1405,6 +1422,7 @@ class SimulationManager:
         def _run():
             try:
                 current_sid = dev.session_id or (dev._fw.session_id if dev._fw else None)
+                logger.info("[send_user_turn:_run] current_sid=%r dev.sid=%r fw.sid=%r", current_sid, dev.session_id, dev._fw.session_id if dev._fw else None)
                 if current_sid:
                     with self._lock:
                         self._session_aliases[preliminary_id] = current_sid
@@ -1497,7 +1515,7 @@ class SimulationManager:
         real_sid = session_id_holder["value"]
         if real_sid and real_sid != preliminary_id:
             self.event_bus.alias_queue(preliminary_id, real_sid)
-        return {"session_id": preliminary_id, "status": "turn_started"}
+        return {"session_id": real_sid or preliminary_id, "status": "turn_started"}
 
     def run_simulation(
         self,

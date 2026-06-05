@@ -211,22 +211,29 @@ CACHE_DIR = Path(__file__).parent / "audio_cache"
 
 
 def _normalize_audio_path(path: str) -> Path:
-    """将可能为 Windows 路径的 audio_path 转为当前平台可访问的 Path。
+    """将可能为 Windows/WSL 路径的 audio_path 转为当前平台可访问的 Path。
 
-    当后端从 Windows 迁移到 WSL 时，数据库中遗留的 ``D:\\...`` 路径需要
-    转为 ``/mnt/d/...`` 才能被 Path.exists() / FileResponse 正常使用。
+    支持双向转换：
+    - WSL 上：D:\\... → /mnt/d/...
+    - Windows 上：/mnt/d/... → D:\\...
     """
     p = Path(path)
     if p.exists():
         return p
-    # 尝试将 Windows 盘符路径（D:\...）转为 WSL 路径（/mnt/d/...）
+    # WSL 路径转 Windows：/mnt/d/... → D:\...
+    if path.startswith("/mnt/") and len(path) > 6 and path[5].isalpha():
+        drive = path[5].upper()
+        rest = path[6:].replace('/', '\\')
+        win_path = Path(f"{drive}:{rest}")
+        if win_path.exists():
+            return win_path
+    # Windows 路径转 WSL：D:\... → /mnt/d/...
     if len(path) >= 3 and path[1] == ':':
         drive = path[0].lower()
         rest = path[2:].replace('\\', '/')
-        wsl_path = f"/mnt/{drive}{rest}"
-        wsl_p = Path(wsl_path)
-        if wsl_p.exists():
-            return wsl_p
+        wsl_path = Path(f"/mnt/{drive}{rest}")
+        if wsl_path.exists():
+            return wsl_path
     return p
 
 # ── 前端静态文件 ────────────────────────────────────────────
@@ -1267,11 +1274,16 @@ def _resolve_audio_for_sim(audio_id: str) -> Path | None:
             path_str = _resolve_figurine_tts_audio_path(db_id)
             if path_str:
                 src = Path(path_str)
+                # WSL 路径自动转换
+                if not src.exists() and path_str.startswith("/mnt/") and len(path_str) > 6 and path_str[5].isalpha():
+                    parts_wsl = path_str[6:].lstrip("/").split("/")
+                    drive = path_str[5].upper()
+                    src = Path(f"{drive}:\\" + "\\".join(parts_wsl))
                 if src.suffix.lower() in (".mp3",):
                     wav_path = CACHE_DIR / f"{src.stem}_sim.wav"
                     _convert_to_wav(src, wav_path)
                     return wav_path if wav_path.exists() else src
-                return src
+                return src if src.exists() else None
         except (ValueError, TypeError):
             pass
         return None
