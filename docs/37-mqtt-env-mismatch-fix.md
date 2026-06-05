@@ -12,8 +12,6 @@
 | 2 | 开场白显示"播放中"但无声音 | 浏览器自动播放策略阻止 `audio.play()`，代码仅 catch 打日志 | ✅ 已修复 |
 | 3 | TTS 类型定义 `id: number` 与后端 `int\|str` 不匹配 | 前端 TypeScript 类型 handoff drift | ✅ 已修复 |
 | 4 | 前端回复文字有时不显示，导致无法继续下一轮对话 | `llm_inference` 事件数据路径错误 + `session_status` 未提取 `reply_text` | ✅ 已修复 |
-| 5 | send_turn 创建新 session 而非复用 intro session | `send_user_turn` 返回 `preliminary_id` 而非 `real_sid`；WSL 路径转换缺失 | ✅ 已修复 |
-| 6 | 音频文件找不到（tts/xxx） | `_normalize_audio_path` 只做 Windows→WSL 转换，不做反向；数据库存 `/mnt/d/...` | ✅ 已修复 |
 
 ## 问题 1：MQTT 环境不匹配
 
@@ -181,50 +179,6 @@ if (payload?.reply_text && !state.lastReplyText) {
 
 - `frontend/src/composables/useMQTTSimulation.ts` — `llm_inference` handler + `session_status` handler
 
-## 问题 5：send_turn 创建新 session
-
-### 现象
-
-- `start-session` 返回 session_id `A`
-- `send-turn` 返回 session_id `B`（不同）
-- Bot 收到新 session start，旧 session 被关闭
-
-### 根因
-
-`SimulationManager.send_user_turn()` 中 `return {"session_id": preliminary_id, ...}` 使用了随机生成的 `preliminary_id` 而非实际的 `real_sid`。虽然 `_run()` 正确设置了 `session_id_holder["value"] = current_sid`，但返回值没有使用它。
-
-### 修复
-
-```python
-# mqtt_bridge.py — send_user_turn return
-return {"session_id": real_sid or preliminary_id, "status": "turn_started"}
-```
-
-### 修改文件
-
-- `backend/mqtt_bridge.py` — `send_user_turn()` return statement
-
-## 问题 6：音频文件找不到（WSL 路径）
-
-### 现象
-
-- `send-turn` 返回 `"Audio not found: tts/147"`
-- 数据库中 `audio_path` 为 `/mnt/d/zebbingo/.../tts_xxx.mp3`
-- Windows 上文件存在但路径格式不匹配
-
-### 根因
-
-`_normalize_audio_path()` 只做 `D:\...` → `/mnt/d/...`（Windows→WSL）转换，不做反向。`_resolve_audio_for_sim()` 的 tts 分支也没有 WSL 路径转换。
-
-### 修复
-
-1. `_normalize_audio_path()` — 增加 `/mnt/d/...` → `D:\...` 双向转换
-2. `_resolve_audio_for_sim()` tts 分支 — 增加 WSL 路径自动转换
-
-### 修改文件
-
-- `backend/server.py` — `_normalize_audio_path()` + `_resolve_audio_for_sim()`
-
 ## 附带改进
 
 ### SimulationResult 增强（P1）
@@ -256,5 +210,3 @@ return {"session_id": real_sid or preliminary_id, "status": "turn_started"}
 3. **跨进程调试** — 当 A 发消息给 B 但 B 收不到时，先用独立订阅者验证 broker 是否收到消息，再逐层排查。
 4. **类型 handoff drift** — 前后端类型定义应有单一真相源（后端 Pydantic），前端自动生成。
 5. **WebSocket 事件数据结构** — 后端 `_emit_device("llm_inference", {"command": data})` 包装了一层，前端必须用 `data.command.text` 而非 `data.text`。事件契约应有文档或类型定义。
-6. **跨平台路径** — 数据库中 `audio_path` 可能是 `/mnt/d/...`（WSL 格式）或 `D:\...`（Windows 格式）。`_normalize_audio_path` 必须支持双向转换。
-7. **Opus 库依赖** — Windows 上 `opuslib_next` 需要 `opus.dll`。通过 `pip install pyogg` 获取，复制 `pyogg/opus.dll` 到 Python 目录。
