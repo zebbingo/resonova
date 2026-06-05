@@ -11,6 +11,7 @@
 | 1 | 选角色后 Intro timeout (30s)，bot_mqtt 无任何日志 | 前端 localStorage 缓存了旧的 `mqttEnv: 'prod'`，resonova 发布到 `prod/...`，bot_mqtt 订阅 `development/...` | ✅ 已修复 |
 | 2 | 开场白显示"播放中"但无声音 | 浏览器自动播放策略阻止 `audio.play()`，代码仅 catch 打日志 | ✅ 已修复 |
 | 3 | TTS 类型定义 `id: number` 与后端 `int\|str` 不匹配 | 前端 TypeScript 类型 handoff drift | ✅ 已修复 |
+| 4 | 前端回复文字有时不显示，导致无法继续下一轮对话 | `llm_inference` 事件数据路径错误 + `session_status` 未提取 `reply_text` | ✅ 已修复 |
 
 ## 问题 1：MQTT 环境不匹配
 
@@ -142,6 +143,42 @@ generatedAudioUrl(id: number | string)  // 原 number
 - `frontend/src/types.ts` — `TTSGenerateResponse.id`
 - `frontend/src/api.ts` — `generatedAudioUrl()`
 
+## 问题 4：前端回复文字不显示
+
+### 现象
+
+- 对话多轮后，前端"回复"区域有时不显示 LLM 回复文字
+- 不显示时，`isSendingTurn` 卡在 `true`，Send Turn 按钮保持禁用，无法发起下一轮对话
+
+### 根因
+
+**两个 bug 叠加：**
+
+1. `llm_inference` 事件数据路径错误 — 后端发送 `{command: {text: "...", cmd: "..."}, turn_id}`，前端读 `data.text`（顶层不存在，值为 `undefined`）
+
+2. `session_status` 的 `turn_completed` 处理不提取 `reply_text` — 即使后端在 payload 中发送了 `reply_text`，前端也不存入 `state.lastReplyText`
+
+### 修复
+
+```typescript
+// useMQTTSimulation.ts — llm_inference handler
+case 'llm_inference':
+  {
+    const cmd = data.command || data  // 兼容两种数据结构
+    const replyText = cmd.text || cmd.reply || cmd.cmd || ''
+    // ... 使用 replyText
+  }
+
+// session_status handler — turn_completed 分支
+if (payload?.reply_text && !state.lastReplyText) {
+  state.lastReplyText = payload.reply_text
+}
+```
+
+### 修改文件
+
+- `frontend/src/composables/useMQTTSimulation.ts` — `llm_inference` handler + `session_status` handler
+
 ## 附带改进
 
 ### SimulationResult 增强（P1）
@@ -172,3 +209,4 @@ generatedAudioUrl(id: number | string)  // 原 number
 2. **浏览器自动播放策略** — 所有音频播放必须处理 autoplay blocked 场景，不能静默忽略。
 3. **跨进程调试** — 当 A 发消息给 B 但 B 收不到时，先用独立订阅者验证 broker 是否收到消息，再逐层排查。
 4. **类型 handoff drift** — 前后端类型定义应有单一真相源（后端 Pydantic），前端自动生成。
+5. **WebSocket 事件数据结构** — 后端 `_emit_device("llm_inference", {"command": data})` 包装了一层，前端必须用 `data.command.text` 而非 `data.text`。事件契约应有文档或类型定义。

@@ -670,11 +670,16 @@ export function useMQTTSimulation() {
         break
 
       case 'llm_inference':
-        addLog('down', 'Pipeline/LLM', { text: data.text, cmd: data.cmd, duration_ms: data.duration_ms }, 'llm_inference', turnId)
-        _setLiveTrace(
-          data.cmd ? `LLM command: ${data.cmd}` : 'LLM received',
-          { lastReplyText: data.text || state.lastReplyText, lastSessionStatus: 'llm_inference' },
-        )
+        // 后端发送 {command: data, turn_id}，data.command 是原始 MQTT 消息
+        {
+          const cmd = data.command || data
+          const replyText = cmd.text || cmd.reply || cmd.cmd || ''
+          addLog('down', 'Pipeline/LLM', { text: replyText, cmd: cmd.cmd, duration_ms: data.duration_ms }, 'llm_inference', turnId)
+          _setLiveTrace(
+            replyText ? `LLM: ${replyText.slice(0, 80)}` : 'LLM received',
+            { lastReplyText: replyText || state.lastReplyText, lastSessionStatus: 'llm_inference' },
+          )
+        }
         break
 
       case 'tts_synthesis':
@@ -732,6 +737,10 @@ export function useMQTTSimulation() {
           state.status = isConnected.value ? 'active' : 'idle'
         } else if (payload?.status === 'turn_completed' || payload?.status === 'intro_complete' || payload?.status === 'intro_timeout' || payload?.status === 'active') {
           state.status = 'active'
+          // 从 turn_completed 提取 reply_text
+          if (payload?.reply_text && !state.lastReplyText) {
+            state.lastReplyText = payload.reply_text
+          }
         }
         // ── 提取延迟指标到 pipelineLatency ──
         if (payload) {
