@@ -1,10 +1,8 @@
 # MQTT 环境不匹配与前端音频播放修复
 
-日期: 2026-06-04
+日期: 2026-06-04（更新: 2026-06-05）
 
 ## 问题总结
-
-全链路测试（TTS→STT→LLM）通过后，在前端 UI 上操作时遇到三个阻塞性问题：
 
 | # | 现象 | 根因 | 状态 |
 |---|------|------|------|
@@ -12,6 +10,10 @@
 | 2 | 开场白显示"播放中"但无声音 | 浏览器自动播放策略阻止 `audio.play()`，代码仅 catch 打日志 | ✅ 已修复 |
 | 3 | TTS 类型定义 `id: number` 与后端 `int\|str` 不匹配 | 前端 TypeScript 类型 handoff drift | ✅ 已修复 |
 | 4 | 前端回复文字有时不显示，导致无法继续下一轮对话 | `llm_inference` 事件数据路径错误 + `session_status` 未提取 `reply_text` | ✅ 已修复 |
+| 5 | send_turn 创建新 session 而非复用 intro session | `send_user_turn()` 返回 `preliminary_id` 而非 `real_sid`；fw.session_id 丢失 | ✅ 已修复 |
+| 6 | 音频文件找不到（tts/xxx） | `_normalize_audio_path` 只做 Windows→WSL 转换，数据库存 `/mnt/d/...` 格式 | ✅ 已修复 |
+| 7 | 前端 WS 连接到 `/ws/session/undefined` | `startSimulation` 返回 session_id 前端未正确接收；WS 无 guard | ✅ 已修复 |
+| 8 | 先选角色再连接后 startSession 不触发 | watcher 仅在 figurineId 变化时检查 isConnected，connect 后不重检 | ✅ 已修复 |
 
 ## 问题 1：MQTT 环境不匹配
 
@@ -210,3 +212,155 @@ if (payload?.reply_text && !state.lastReplyText) {
 3. **跨进程调试** — 当 A 发消息给 B 但 B 收不到时，先用独立订阅者验证 broker 是否收到消息，再逐层排查。
 4. **类型 handoff drift** — 前后端类型定义应有单一真相源（后端 Pydantic），前端自动生成。
 5. **WebSocket 事件数据结构** — 后端 `_emit_device("llm_inference", {"command": data})` 包装了一层，前端必须用 `data.command.text` 而非 `data.text`。事件契约应有文档或类型定义。
+6. **跨平台路径** — 数据库中 `audio_path` 可能是 `/mnt/d/...`（WSL 格式）或 `D:\...`（Windows 格式）。`_normalize_audio_path` 必须支持双向转换。
+7. **Opus 库依赖** — Windows 上 `opuslib_next` 需要 `opus.dll`。通过 `pip install pyogg` 获取，复制 `pyogg/opus.dll` 到 Python 目录。
+8. **Session 复用** — `send_user_turn` 必须返回 `real_sid`（实际 session ID），不能用临时生成的 `preliminary_id`。否则前端 WS 订阅错误的 queue。
+9. **WS guard** — 前端连接 session WS 前必须检查 `state.sessionId` 是否有效，避免连接 `/ws/session/undefined`。
+10. **NFC 触发时序** — `startSession` 在 `figurineId` watcher 中触发，但只在 watcher 触发时检查 `isConnected`。如果用户先选角色再连接，connect 完成后 watcher 不会重触发。必须在 `connectDevice` 成功后也检查是否需要自动 `startSession`。
+
+## 问题 5：send_turn session 不复用
+
+### 现象
+
+- `start-session` 返回 session_id `A`
+- `send-turn` 返回 session_id `B`（不同）
+- Bot 收到新 session start，旧 session 被关闭
+
+### 根因
+
+`SimulationManager.send_user_turn()` 中 `return {"session_id": preliminary_id, ...}` 使用了随机生成的临时 ID 而非实际的 `real_sid`。同时 `fw.session_id` 可能在 intro 完成后被 bot 侧清除，导致 `send_user_turn` 找不到现有 session。
+
+### 修复
+
+1. 返回 `real_sid or preliminary_id` 而非 `preliminary_id`
+2. 在 `send_user_turn` 中，当 `fw.session_id` 为空但 `dev.session_id` 有值时，从 `dev.session_id` 恢复
+
+```python
+# mqtt_bridge.py
+if not self._fw.session_id:
+    if self.session_id:
+        self._fw.session_id = self.session_id
+    else:
+        self._fw.start_session(...)
+
+# 返回值
+return {"session_id": real_sid or preliminary_id, "status": "turn_started"}
+```
+
+### 修改文件
+
+- `backend/mqtt_bridge.py` — `send_user_turn()` return + fw.session_id 恢复
+
+## 问题 6：音频文件找不到（WSL 路径）
+
+### 现象
+
+- `send-turn` 返回 `"Audio not found: tts/147"`
+- 数据库中 `audio_path` 为 `/mnt/d/zebbingo/.../tts_xxx.mp3`
+- Windows 上文件存在但路径格式不匹配
+
+### 根因
+
+`_normalize_audio_path()` 只做 `D:\...` → `/mnt/d/...`（Windows→WSL）转换。数据库存储的是 WSL 格式，但后端在 Windows 上运行时无法识别。
+
+### 修复
+
+增加双向转换逻辑：
+
+```python
+def _normalize_audio_path(path: str) -> Path:
+    p = Path(path)
+    if p.exists():
+        return p
+    # WSL → Windows: /mnt/d/... → D:\...
+    if path.startswith("/mnt/") and len(path) > 6 and path[5].isalpha():
+        drive = path[5].upper()
+        rest = path[6:].replace('/', '\\')
+        win_path = Path(f"{drive}:{rest}")
+        if win_path.exists():
+            return win_path
+    # Windows → WSL: D:\... → /mnt/d/...
+    if len(path) >= 3 and path[1] == ':':
+        drive = path[0].lower()
+        rest = path[2:].replace('\\', '/')
+        wsl_path = Path(f"/mnt/{drive}{rest}")
+        if wsl_path.exists():
+            return wsl_path
+    return p
+```
+
+### 修改文件
+
+- `backend/server.py` — `_normalize_audio_path()` + `_resolve_audio_for_sim()` tts 分支
+
+## 问题 7：WS 连接 `/ws/session/undefined`
+
+### 现象
+
+- 后端日志：`WebSocket /ws/session/undefined [accepted]`
+- 前端收到 WS 事件但无法匹配 session
+
+### 根因
+
+`startSimulation` 中 `resp.data.session_id` 可能为 undefined（simulate API 走旧路径时可能不返回），前端直接用它连 WS。
+
+### 修复
+
+在 `startSimulation` 中 guard WS 连接：
+
+```typescript
+if (state.sessionId) {
+  const wsUrl = `ws://${window.location.host}/ws/session/${state.sessionId}`
+  ws = new WebSocket(wsUrl)
+  // ... ws event handlers
+} // end if
+```
+
+### 修改文件
+
+- `frontend/src/composables/useMQTTSimulation.ts` — `startSimulation()` WS guard
+
+## 问题 8：先选角色再连接后 startSession 不触发
+
+### 现象
+
+- 用户先选角色（figurineId watcher 触发时 `isConnected=false`，`startSession` 跳过）
+- 然后点连接（connect 成功，但 figurineId 没变，watcher 不重触发）
+- 结果：没有 intro，用户只能点 Start 走旧 simulate 流程
+
+### 根因
+
+`figurineId` watcher 中的 NFC 逻辑只在 watcher 触发时检查 `isConnected`。连接操作不会导致 figurineId 变化，所以 watcher 不重触发。
+
+### 修复
+
+在 `handleConnect` 成功后检查是否已选角色，如果是则自动触发 `startSession`：
+
+```typescript
+// DeviceCard.vue — handleConnect
+completeStep('device', '设备连接', `${deviceId.value} 已上线`)
+if (figurineId.value && !isSimulating.value) {
+  startSession({ figurineId: figurineId.value, mode: mode.value }).catch(err => {
+    console.warn('[Auto-NFC] 连接后自动启动会话失败:', err.message)
+  })
+}
+```
+
+### 修改文件
+
+- `frontend/src/components/DeviceCard.vue` — `handleConnect()` 连接成功后自动触发
+
+## E2E 验证方法
+
+```bash
+# 在 Windows 上运行（后端 + 前端已启动）
+python scripts/e2e_verify.py
+```
+
+验证项：
+1. Connect 成功
+2. Start-session 返回有效 session_id（<30s）
+3. Send-turn session_id 与 intro session_id 一致
+4. Turn 完成：STT 识别正确 + TTS 有响应
+
+## 经验教训（补充）
