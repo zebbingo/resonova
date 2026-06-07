@@ -13,3 +13,4 @@ Thumbs.db
 .env.local
 .venv_deleteme/
 backend/.venv
+backend/.audio_cache/
