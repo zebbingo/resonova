@@ -294,57 +294,31 @@ MQTT_HOST=192.168.52.134  # WSL IP
 
 **结论**：resonova 后端 **必须在 WSL 内启动**，这是架构设计决定的，不是 bug。
 
-### 混乱追溯：为什么设计被破坏了
+### ✅ 2026-06-07 迁移完成：WSL 独立 clone（不再用软链）
 
-**原始设计（doc-20，2026-05-29）**：
+**之前的错误**：WSL 通过软链 `/home/administrator/projects/resonova -> /mnt/d/...` 访问 Windows 上的代码，导致：
+- `.venv` 跨 9p 文件系统，性能差
+- 另一个 AI 直接用 Windows Python 启动后端，连不上 NanoMQ
+
+**迁移后**：
 ```
-Windows D:\zebbingo\projects\resonova\  ← git repo（源码唯一副本）
-WSL /home/administrator/projects/resonova → 软链到 /mnt/d/... （通过软链访问源码）
-WSL .venv → Linux Python 3.13（在 /mnt/d/ 上创建的 Linux venv）
-```
-
-后端在 WSL 内通过软链启动，`.venv` 是 Linux venv，`localhost:1883` 直接就是 NanoMQ。
-一切正常，因为后端进程跑在 WSL 内。
-
-**doc-20 第 58-59 行明确写着**：
-> resonova 后端 | WSL | ✅ | uvicorn 跑在 WSL，必须访问源码
-
-**原始启动脚本**：`scripts/setup/start-local-dev.sh`（WSL bash 脚本）
-```bash
-# 第 738 行
-"$STT_VENV_PY" server.py  # WSL 内的 .venv/bin/python
+Windows:  D:\zebbingo\projects\resonova\     ← 前端开发、代码编辑、git push
+WSL ext4: /home/administrator/projects/resonova/  ← git clone，后端运行
 ```
 
-**混乱是如何发生的**：
-1. 项目从 `stt-test-tool` 重命名为 `resonova`（2026-05-29）
-2. 另一个 AI 创建了 `scripts/setup/start-resonova.ps1`（PowerShell 脚本）
-3. 这个脚本用 `C:\Program Files\Python311\python.exe`（Windows 系统Python）启动后端
-4. 它尝试设 `$env:MQTT_HOST = Get-WslBrokerHost` 来绕过，但后端代码 `_resolve_local_mqtt_host()` 已有自动WSL IP适配
-5. **但 `start-resonova.ps1` 设的环境变量 `MQTT_HOST` 被 `_resolve_mqtt_host()` 读到，而 `profile=local` 走的是 `_resolve_local_mqtt_host()` 不读 `MQTT_HOST` 环境变量**
-6. 结果：`profile=local` 调 `_resolve_local_mqtt_host()` → 尝试 `wsl hostname -I` → 可能超时或失败 → fallback 到 `localhost` → 连接拒绝
+**迁移步骤**：
+1. 删除旧软链：`rm /home/administrator/projects/resonova`
+2. WSL clone：`git clone https://github.com/zebbingo/resonova.git`
+3. 创建 .venv：`cd backend && uv venv --python 3.13 && uv sync`
+4. 启动后端：`uv run uvicorn server:app --host 0.0.0.0 --port 8765`
+5. Windows portproxy：`netsh interface portproxy add v4tov4 listenport=8765 listenaddress=127.0.0.1 connectport=8765 connectaddress=192.168.52.134`
 
-**根本问题**：`start-resonova.ps1` 违反了 doc-20 的设计原则，试图在 Windows 上运行后端。
-虽然 `mqtt_bridge.py` 有 Windows 兼容层，但它依赖 `wsl hostname -I` 子进程调用，不可靠。
+**验证通过**：
+- WSL 后端启动 → `MQTT: profile=local localhost:1883`（直连 NanoMQ）
+- Windows `localhost:8765` → portproxy → WSL `192.168.52.134:8765`（正常响应）
+- `/api/figurines` 返回 21 个角色
 
-**正确的修复**：
-- 删除或弃用 `scripts/setup/start-resonova.ps1`（它的设计方向是错误的）
-- 使用 `scripts/setup/start-local-dev.sh` 在 WSL 内启动
-- 或直接在 WSL 内启动后端：
-  ```bash
-  wsl bash -lc "cd /home/administrator/projects/resonova/backend && uv run uvicorn server:app --host 0.0.0.0 --port 8765"
-  ```
-
-**当前验证**：
-```bash
-# WSL 软链还在
-wsl ls -la /home/administrator/projects/resonova
-# → resonova -> /mnt/d/zebbingo/projects/resonova ✅
-
-# WSL .venv 还在（Linux Python 3.13）
-wsl cat /home/administrator/projects/resonova/backend/.venv/pyvenv.cfg
-# → prompt = stt-test-backend（旧名，未改名，但能用）
-
-# Windows 上 .venv 不存在
-Test-Path D:\zebbingo\projects\resonova\backend\.venv\pyvenv.cfg
-# → False（因为 .venv 是 Linux 格式，Windows 无法识别）
-```
+**日常开发流程**：
+- Windows 上编辑代码 → `git push`
+- WSL 上 `cd /home/administrator/projects/resonova && git pull` 拉取
+- 前端在 Windows 上 `pnpm dev`，后端在 WSL 上 `uv run uvicorn`
