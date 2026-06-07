@@ -34,7 +34,7 @@ export type MQTTMessageType =
   | 'cue_start' | 'cue_eos'
   | 'command' | 'command_preempt'
   | 'vadeos' | 'introeos'
-  | 'stt_result' | 'stt_inference' | 'llm_inference' | 'tts_synthesis'
+  | 'stt_result' | 'stt_inference' | 'llm_inference' | 'llm_text' | 'tts_synthesis'
   | 'audio_chunk' | 'audio_eos' | 'audio_ready' | 'audio_start as audio_start_down'
   | 'intro_start' | 'intro_end'
   | 'moderation_complete' | 'output_moderation_complete'
