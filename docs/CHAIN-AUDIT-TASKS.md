@@ -216,3 +216,31 @@ if event_type == "llm_text":
 5. **前端 WebSocket 是否连接**：浏览器 F12 → Network → WS，检查 `/ws/device/{id}`
 
 6. **Intro 音频是否超时**：看前端控制台是否有 `intro_timeout` 日志
+
+7. **Resonova 后端是否存活**：
+   ```powershell
+   Get-NetTCPConnection -LocalPort 8765 -ErrorAction SilentlyContinue
+   # 如果无输出 = 后端已死，需要重启
+   ```
+
+8. **Resonova 后端日志**：`backend/server_output.log` 末尾是否有 Traceback
+
+---
+
+## 2026-06-07 诊断记录：后端崩溃导致全链路不可用
+
+**现象**：前端有 intro/upload_progress 事件但没有 audio，bot_mqtt 日志正常。
+
+**根因**：Resonova 后端（Windows 上的 uvicorn reload 模式）崩溃，
+端口 8765 无进程监听。原因是 `server.py` 被修改后触发了 reload，
+但 Windows multiprocessing spawn 模式缺少 `if __name__ == '__main__'` 保护，
+导致 RuntimeError: "An attempt has been made to start a new process before
+the current process has finished its bootstrapping phase."
+
+**修复**：
+1. 确保 `start_server.py` 或 `server.py` 的入口有 `if __name__ == '__main__'` 保护
+2. 或者用 `uvicorn server:app --host 0.0.0.0 --port 8765` 直接启动（不用 reload 模式）
+3. 或者用 `scripts/start-resonova.ps1 start` 脚本重启整个测试平台
+
+**关键验证**：bot_mqtt 日志确认全链路正常（session/start → introeos → TTS audio → session/end），
+问题完全在 resonova 后端崩溃，不在 chatbot 侧。
