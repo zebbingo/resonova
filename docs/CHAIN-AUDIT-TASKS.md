@@ -244,3 +244,52 @@ the current process has finished its bootstrapping phase."
 
 **关键验证**：bot_mqtt 日志确认全链路正常（session/start → introeos → TTS audio → session/end），
 问题完全在 resonova 后端崩溃，不在 chatbot 侧。
+
+---
+
+## 🔴 致命问题：后端必须运行在 WSL 上，不能在 Windows 上
+
+**发现时间**：2026-06-07
+
+**现象**：前端点击连接后，`/api/device/connect` 返回错误：
+```
+Device xxx: cannot reach broker localhost:1883: [WinError 10061] 由于目标计算机积极拒绝，无法连接。
+```
+
+**根因**：
+- NanoMQ 运行在 WSL（192.168.52.134）里，监听 `0.0.0.0:1883`
+- DeviceFirmware 在后端进程中通过 `localhost:1883` 连接 NanoMQ
+- **如果后端运行在 Windows 上**，Windows 的 `localhost:1883` 没有任何服务 → 连接被拒绝
+- **如果后端运行在 WSL 上**，WSL 的 `localhost:1883` 就是 NanoMQ → 正常连接
+
+**另一个 AI 犯的错误**：
+用 Windows 系统的 `C:\Program Files\Python311\python.exe` 启动了后端，
+而不是用 WSL 内的 Python 启动。这导致后端在 Windows 上运行，连不上 WSL 的 NanoMQ。
+
+**正确的启动方式**：
+```bash
+# 必须在 WSL 内启动后端
+wsl bash -lc "cd /mnt/d/zebbingo/projects/resonova/backend && uv run uvicorn server:app --host 0.0.0.0 --port 8765"
+```
+或者用启动脚本：
+```powershell
+# scripts/start-resonova.ps1 会自动在 WSL 内启动后端
+scripts/start-resonova.ps1 start
+```
+
+**验证后端是否在 WSL 上运行**：
+```powershell
+# 检查 8765 端口的进程
+Get-Process -Id (Get-NetTCPConnection -LocalPort 8765).OwningProcess | Select Path
+# 如果 Path 包含 Windows 路径（如 C:\Program Files\Python311）= 错误
+# 如果通过 WSL 启动，Windows 上看不到 python 进程，需要用 wsl ps aux 查看
+```
+
+**或者：在 Windows 上运行时使用 WSL IP**：
+如果坚持在 Windows 上运行后端，需要将 MQTT host 改为 WSL IP：
+```
+# 不推荐，因为 WSL IP 可能变化
+MQTT_HOST=192.168.52.134  # WSL IP
+```
+
+**结论**：resonova 后端 **必须在 WSL 内启动**，这是架构设计决定的，不是 bug。
