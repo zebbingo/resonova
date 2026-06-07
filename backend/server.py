@@ -1669,7 +1669,16 @@ def start_session(req: StartSessionRequest):
         dev.nfc_id = req.nfc_id
         # 同步触发开场白并等待完成
         try:
+            # 先创建 EventBus queue，确保 WS 连上时 intro 事件不丢失
+            sid_preliminary = dev.session_id or ""
+            if sid_preliminary and simulation_manager.event_bus:
+                simulation_manager.event_bus.create_queue(sid_preliminary)
             sid = dev.start_session_and_await_intro()
+            # 如果 session_id 变了（fw 内部重新生成），为新 id 也创建 queue
+            if sid and sid != sid_preliminary and simulation_manager.event_bus:
+                simulation_manager.event_bus.create_queue(sid)
+                if sid_preliminary:
+                    simulation_manager.event_bus.alias_queue(sid, sid_preliminary)
         except Exception as exc:
             logger.warning("start_session_and_await_intro failed: %s", exc)
             sid = dev.session_id or ""
@@ -3363,17 +3372,20 @@ async def websocket_monitoring(websocket: WebSocket):
                     text = raw_event.get("text", "")
                     chunk = raw_event.get("chunk", True)
                     session_id = raw_event.get("session_id", "")
-                    # Inject into ALL active device firmwares (session_id may be absent)
+                    # 推到 session WS 的 EventBus queue
                     for dev in simulation_manager._devices.values():
-                        if dev._fw and dev._simulating:
+                        if dev._fw and dev.is_connected:
                             dev._fw.collect_llm_text(text, chunk)
-                            if session_id:
-                                simulation_manager.event_bus.publish(session_id, {
-                                    "type": "llm_text",
-                                    "text": text,
-                                    "chunk": chunk,
-                                    "session_id": session_id,
-                                })
+                            # 用 device 的 session_id 推到 session WS
+                            if not session_id and dev.session_id:
+                                session_id = dev.session_id
+                    if session_id and simulation_manager.event_bus:
+                        simulation_manager.event_bus.publish(session_id, {
+                            "type": "llm_text",
+                            "text": text,
+                            "chunk": chunk,
+                            "session_id": session_id,
+                        })
                 
                 # 评估和转换事件
                 transformed_event = _evaluate_and_transform_event(raw_event)

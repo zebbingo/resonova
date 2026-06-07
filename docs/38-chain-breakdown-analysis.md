@@ -191,3 +191,118 @@ function _ensureSessionWs() {
 - 每次功能修改应该独立 commit，revert 时可以精确回退
 - 补充 `e2e_ws_smoke.py` 类型的测试
 - 关键 UI 功能（开场白、Turn 反馈）需要 Playwright 级别的测试
+
+---
+
+## 8. 深度诊断发现（2026-06-07 修复过程）
+
+### 断点 1 根因：EventBus queue 时序（已修复 ✅）
+
+**现象**：`start-session` API 返回成功，Session WS 连接成功，但 intro 期间 0 个事件。
+
+**根因**：`start_session_and_await_intro()` 是阻塞的。intro 期间 `_emit_session()` 调用 `EventBus.publish(session_id, event)`，但此时 WS 还没连，queue 不存在。`SimulationEventBus.publish()` 发现 `self._queues.get(key)` 返回 None 就丢弃事件。
+
+**代码位置**：
+- `mqtt_bridge.py` `SimulationEventBus.publish()` line 383 — `q = self._queues.get(key); if q is not None: q.put_nowait(event)`
+- `mqtt_bridge.py` `ConnectedDevice.start_session_and_await_intro()` line 717 — `_emit_session` 在 queue 创建之前
+
+**修复**：在 `start_session_and_await_intro()` 中，`self._fw.start_session()` 生成 session_id 后、`_emit_session()` 之前，先 `self.event_bus.create_queue(session_id)` 确保 queue 存在。
+
+**验证**：诊断测试 L2-INTRO 从 FAIL 变为 PASS。
+
+### 断点 2 根因：`_simulating` 标志位错误（已修复 ✅）
+
+**现象**：`llm_text` 事件到达 resonova 后端，`collect_llm_text` 没执行，EventBus publish 也没执行。
+
+**根因**：resonova 后端 monitoring 端点的 `llm_text` 处理检查 `dev._simulating`。但 `start_session_and_await_intro()` 的 finally 块设 `_simulating = False`（line 749）。intro 完成后 `_simulating` 为 False，turn 期间 monitoring 端点跳过了该设备。
+
+**代码位置**：
+- `mqtt_bridge.py` `start_session_and_await_intro()` finally 块 — `self._simulating = False`
+- `server.py` monitoring handler — `if dev._fw and dev._simulating:`
+
+**修复**：将 `dev._simulating` 改为 `dev.is_connected`（设备在线就处理，不依赖 simulating 状态）。
+
+**验证**：待确认。
+
+### 断点 3 根因：`_response_active=False` 导致 LLM text 钩子不执行（修复中 ⚠️）
+
+**现象**：bot 日志显示 `LLMTextFrame received: active=False`，所有 LLM text 都在 `_response_active=False` 状态下到达。monitoring 钩子代码在 `_response_active` 检查之后，所以不执行。
+
+**根因**：pipecat pipeline 中 `CancelFrame`（由 intro 结束触发）在 LLM text 之前到达 `OutputModerationGate`，导致 `reset_session()` → `_response_active=False`。之后 LLM 的流式输出才到达，全部被直接转发而不经过钩子。
+
+**时序**：
+```
+CancelFrame → reset_session(_response_active=False)
+LLMTextFrame("That") → active=False → 直接转发，钩子不执行
+LLMTextFrame(" is") → active=False → 直接转发，钩子不执行
+...
+```
+
+**代码位置**：`output_moderation_gate.py` line 919-921
+```python
+if isinstance(frame, LLMTextFrame):
+    if not self._response_active:  # ← True，直接转发
+        await self.push_frame(frame, direction)
+        return
+    # ... 钩子代码在这里，永远不会执行
+```
+
+**修复**：将 monitoring 钩子移到 `_response_active` 检查之前，在 `isinstance(frame, LLMTextFrame)` 判断处无条件执行。
+
+**⚠️ 潜在冲突**：不依赖 `_response_active` 就 emit `llm_text`，可能在 session 已关闭时也发送。但 monitoring 只是观察通道，不影响主流程。
+
+### 断点 4 发现：Turn 时序不完整（待调查 🔍）
+
+**现象**：诊断测试中 Turn 后只收到 `upload_progress` 和 `stt_inference`，没有 audio/tts/llm。但 L5 结果数据有时能拿到（STT/Reply/TTS count 正常）。
+
+**可能原因**：
+- 15 秒等待时间不够（intro 音频 52 秒，turn 处理可能更慢）
+- Turn 的 LLM/TTS 处理在 cancel 之后才完成（与断点 3 同源问题）
+- 诊断测试断开连接太早，bot 还在处理中
+
+### 断点 5：Monitoring WS Broken pipe 导致 llm_text 丢失（已知 🔍）
+
+**现象**：18/19 PASS，唯一 FAIL 是 L3-TURN-LLM。L5 reply_text 有值。
+
+**根因**：bot monitoring WS 在 LLM text 发送期间断开（Broken pipe），`hook_manager._enabled` 被设为 False，所有 `emit("llm_text", ...)` 被跳过。WS 重连后 `_enabled=True`，但 LLM text 已全部发完。
+
+**bot 日志证据**：
+```
+22:22:45 | WARNING | Monitoring WebSocket send failed: [Errno 32] Broken pipe
+22:22:48 | INFO    | Monitoring WebSocket connected (reconnected)
+```
+
+**时序**：
+```
+LLMTextFrame("What") → _enabled=True → emit 成功 → 但 WS 已断 → 数据丢失
+LLMTextFrame(" would") → _enabled=False → emit 跳过
+LLMTextFrame(" you") → _enabled=False → emit 跳过
+...
+```
+
+**L5 reply_text 有值的原因**：resonova 后端通过 `OutputModerationGate` 的另一个钩子 `output_moderation_complete` 获取了最终审核结果中的文本（非 `llm_text` 事件）。
+
+**修复方向**：
+- 短期：在 `emit` 中加 buffer，WS 断开时缓存事件，重连后重发
+- 长期：改用 MQTT 内部事件传递（不依赖外部 WS 稳定性）
+
+---
+
+## 9. 专家 AI 诊断对照（2026-06-07）
+
+外部专家 AI 对代码变更做了风险评估，逐条对照：
+
+| # | 风险 | 专家判断 | 实际情况 | 当前状态 |
+|---|------|---------|---------|---------|
+| 1 | 双 session 冲突（connectDevice + startSession） | 🔴 高风险 | `connect_device()` 不触发 intro，只有 `start-session` API 触发 | ✅ 不存在 |
+| 2 | EventBus queue key 不匹配 | 🟡 中风险 | `create_queue` 在 `start_session_and_await_intro` 中用实际 session_id 创建，不是 sid_preliminary | ⚠️ server.py 中的 sid_preliminary 代码冗余但无害 |
+| 3 | llm_text 注入错误 device | 🟡 中风险 | 已改为 `is_connected`，且当前只有单设备场景 | ✅ 已修复 |
+| 4 | _normalize_audio_path 双向转换 | 🟡 中风险 | WSL 环境下可能误转 | 🔍 未触发 |
+| 5 | useMQTTSimulation.ts 变更 | 🟢 低风险 | `_ensureSessionWs` 恢复 + `llm_text` case | ✅ 正常 |
+
+### 专家建议的检查清单验证
+
+1. **双 session**：bot_mqtt 日志中同一 device 没有连续两个 session/start ✅
+2. **EventBus queue key**：前端 WS 连接 `/ws/session/{session_id}` 与实际 session_id 一致 ✅
+3. **collect_llm_text**：device_firmware.py 有此方法 ✅
+4. **MQTT_ENV**：`/api/debug/runtime-config` 返回 `mqtt.env: "development"` ✅

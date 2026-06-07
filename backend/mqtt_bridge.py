@@ -710,6 +710,10 @@ class ConnectedDevice:
             self.touch_seen()
             logger.info("Intro session started: %s", session_id)
 
+            # 确保 EventBus queue 存在，这样后续 _emit_session 不会丢事件
+            if self.event_bus:
+                self.event_bus.create_queue(session_id)
+
             self._emit_session(session_id, "session_status", {
                 "status": "active",
                 "session_id": session_id,
