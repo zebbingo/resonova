@@ -232,6 +232,7 @@ export function useMQTTSimulation() {
   const logs = ref<MQTTMessageLog[]>([])
   const sttResult = ref<SttResultData | null>(null)
   let ws: WebSocket | null = null
+  let _sessionWsSessionId: string | null = null
   let deviceWs: WebSocket | null = null
   let systemWs: WebSocket | null = null
   let _deviceId: string = ''
@@ -261,6 +262,17 @@ export function useMQTTSimulation() {
       clearInterval(_keepaliveTimer)
       _keepaliveTimer = null
     }
+  }
+
+  function _closeSessionWs() {
+    if (ws) {
+      try {
+        ws.onclose = null
+        ws.close()
+      } catch {}
+      ws = null
+    }
+    _sessionWsSessionId = null
   }
 
   /** 连接 /ws/system 监听 device_evicted 等全局事件 */
@@ -366,8 +378,22 @@ export function useMQTTSimulation() {
           _handleWsMessage(data)
         } catch {}
       }
-      deviceWs.onclose = () => {
-        // 连接断开，停止 keepalive 和 cleanup
+      deviceWs.onclose = function _reconnectDeviceWs() {
+        // device WS 断开后自动重连（只要设备仍处于连接状态）
+        if (isConnected.value && _deviceId) {
+          console.log('[DeviceWS] Disconnected, reconnecting in 2s...')
+          setTimeout(() => {
+            if (isConnected.value && _deviceId && (!deviceWs || deviceWs.readyState === WebSocket.CLOSED)) {
+              const url = `ws://${window.location.host}/ws/device/${_deviceId}`
+              deviceWs = new WebSocket(url)
+              deviceWs.onmessage = (ev) => {
+                try { _handleWsMessage(JSON.parse(ev.data)) } catch {}
+              }
+              deviceWs.onclose = _reconnectDeviceWs
+              deviceWs.onopen = () => console.log('[DeviceWS] Reconnected')
+            }
+          }, 2000)
+        }
       }
 
       // 启动 Keepalive（15s 间隔），防止设备超时
@@ -388,11 +414,15 @@ export function useMQTTSimulation() {
       await axios.post(`/api/device/disconnect/${_deviceId}`)
     } catch {}
     _stopKeepalive()
-    if (deviceWs) { deviceWs.close(); deviceWs = null }
-    if (ws) { ws.close(); ws = null }
-    if (systemWs) { systemWs.close(); systemWs = null }
+    // 先标记为断开，阻止 device WS onclose 触发重连
     isConnected.value = false
     isSimulating.value = false
+    if (deviceWs) {
+      deviceWs.onclose = null // 阻止重连
+      deviceWs.close(); deviceWs = null
+    }
+    _closeSessionWs()
+    if (systemWs) { systemWs.close(); systemWs = null }
     state.isOnline = false
     state.status = 'idle'
     state.heartbeatActive = false
@@ -544,20 +574,30 @@ export function useMQTTSimulation() {
   /** 确保 session WebSocket 已连接到当前 session_id。 */
   function _ensureSessionWs() {
     if (!state.sessionId) return
+    const expectedSessionId = state.sessionId
     // 已连接且 session 匹配则跳过
-    if (ws && ws.readyState === WebSocket.OPEN) return
+    if (ws && ws.readyState === WebSocket.OPEN && _sessionWsSessionId === expectedSessionId) return
     // 关闭旧连接
     if (ws) {
-      try { ws.close() } catch {}
+      try {
+        ws.onclose = null
+        ws.close()
+      } catch {}
       ws = null
     }
-    const wsUrl = `ws://${window.location.host}/ws/session/${state.sessionId}`
-    ws = new WebSocket(wsUrl)
-    ws.onopen = () => {
-      console.log('[WebSocket] Session WS connected:', state.sessionId)
+    const wsUrl = `ws://${window.location.host}/ws/session/${expectedSessionId}`
+    const sessionWs = new WebSocket(wsUrl)
+    ws = sessionWs
+    _sessionWsSessionId = expectedSessionId
+    sessionWs.onopen = () => {
+      if (state.sessionId !== expectedSessionId) {
+        try { sessionWs.close() } catch {}
+        return
+      }
+      console.log('[WebSocket] Session WS connected:', expectedSessionId)
       addLog('up', 'WebSocket connected', {}, 'other')
     }
-    ws.onmessage = (event) => {
+    sessionWs.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data)
         _handleWsMessage(data)
@@ -565,11 +605,17 @@ export function useMQTTSimulation() {
         console.error('[WebSocket] Parse error:', err)
       }
     }
-    ws.onerror = () => {
+    sessionWs.onerror = () => {
       console.warn('[WebSocket] Session WS error')
     }
-    ws.onclose = () => {
+    sessionWs.onclose = () => {
       console.log('[WebSocket] Session WS closed')
+      if (ws === sessionWs) {
+        ws = null
+      }
+      if (_sessionWsSessionId === expectedSessionId) {
+        _sessionWsSessionId = null
+      }
     }
   }
 
@@ -599,6 +645,8 @@ export function useMQTTSimulation() {
         state.sessionId = resp.data.session_id
       }
       addLog('up', 'session/start', { figurineId: config.figurineId, mode: config.mode, session_id: state.sessionId }, 'session_start')
+      // 立即设置金色 Turn 区数据（intro 已在后端完成，确保 UI 立刻展示）
+      _setLiveTrace('Intro complete — session ready for user input', { lastSessionStatus: 'intro_complete' })
       // 连接 session WebSocket 以接收实时事件（STT/LLM/TTS）
       _ensureSessionWs()
       return resp.data
@@ -781,6 +829,7 @@ export function useMQTTSimulation() {
       case 'session_status':
         if (payload?.session_id && payload.session_id !== state.sessionId) {
           state.sessionId = payload.session_id
+          _ensureSessionWs()
         }
         if (payload?.status === 'error') {
           state.errorMessage = payload?.error || state.errorMessage

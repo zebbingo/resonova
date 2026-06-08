@@ -25,6 +25,12 @@
 - ✅ `resonova/backend/server.py` - 添加 `/ws/monitoring` WebSocket 端点
 - ✅ **服务已启动**：`http://0.0.0.0:8765`
 
+#### 当前现场状态（2026-06-08）
+- ✅ 前端已经可以启动并提供更明确的 turn 反馈
+- ✅ Resonova 后端监控接口可用
+- ⚠️ 这台 Windows 主机没有可用的 WSL distro，所以 WSL 内的 `chatbot_api` 和 MQTT broker 目前无法直接拉起
+- ⚠️ 也就是说，当前只能看到前端/后端两段，真正的端到端还需要 Linux / WSL 运行环境才能继续推进
+
 #### 📚 文档
 - ✅ `MONITORING_CONFIG.md` - 配置说明文档（258 行）
 - ✅ `HOOK_IMPLEMENTATION_COMPLETE.md` - 实施完成报告（314 行）

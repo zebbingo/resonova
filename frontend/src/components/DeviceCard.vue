@@ -338,7 +338,10 @@ watch(
       state.lastEventSummary = 'VAD 阻塞，正在切换 Profile 重试...'
       return
     }
-    if (nextStatus === 'turn_completed' || nextStatus === 'completed' || nextStatus === 'session_closed' || nextStatus === 'error') {
+    // Turn 完成：intro_complete = 开场白/回复播放完毕，capturing = VAD 重新开始（下一轮）
+    // 也保留 completed/session_closed/error 作为会话级结束
+    const turnDoneStatuses = ['turn_completed', 'completed', 'session_closed', 'error', 'intro_complete', 'capturing']
+    if (turnDoneStatuses.includes(nextStatus || '')) {
       const stepId = pendingSendTurnStepId.value
       pendingSendTurnStepId.value = null
       isSendingTurn.value = false
@@ -656,6 +659,7 @@ async function handleSendTurnWithFeedback() {
   const stepId = addStep('session', '手动发送一轮', `audio_id: ${audioId} · 等待系统回复`)
   pendingSendTurnStepId.value = stepId || null
   isSendingTurn.value = true
+  state.lastReplyText = undefined
   state.lastEventSummary = '请求已发出，等待设备回复'
   state.lastEventAt = new Date()
   state.lastSessionStatus = 'turn_sent'
