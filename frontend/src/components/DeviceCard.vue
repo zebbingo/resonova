@@ -330,6 +330,61 @@ const liveFeedback = computed(() => {
   return parts
 })
 
+const turnProgressSteps = computed(() => {
+  const status = state.lastSessionStatus || ''
+  const isTerminal = ['turn_completed', 'completed', 'session_closed', 'error', 'intro_complete', 'capturing'].includes(status)
+  const hasStt = !!state.lastSttText
+  const hasReply = !!state.lastReplyText
+  const hasAudio = !!state.lastAudioUrl
+
+  const stepState = (done: boolean, active: boolean) => {
+    if (done) return 'done'
+    if (active) return 'active'
+    return 'pending'
+  }
+
+  const sentDone = !!state.lastEventSummary || !!status
+  const sttDone = hasStt || hasReply || hasAudio || isTerminal
+  const replyDone = hasReply || hasAudio || isTerminal
+  const audioDone = hasAudio || isTerminal
+  const finishedDone = isTerminal || (!isSendingTurn.value && (hasStt || hasReply || hasAudio))
+
+  return [
+    {
+      key: 'sent',
+      label: '已发送',
+      detail: state.lastSessionStatus === 'vad_retrying'
+        ? 'VAD 阻塞，正在自动重试'
+        : '请求已发出，等待设备接收',
+      state: stepState(sentDone, isSendingTurn.value || status === 'turn_sent' || status === 'vad_retrying'),
+    },
+    {
+      key: 'stt',
+      label: 'STT',
+      detail: state.lastSttText || '等待语音识别结果',
+      state: stepState(sttDone, sentDone && !hasStt && !hasReply && !hasAudio),
+    },
+    {
+      key: 'reply',
+      label: '回复',
+      detail: state.lastReplyText || '等待 LLM / 回复文本',
+      state: stepState(replyDone, hasStt && !hasReply && !hasAudio),
+    },
+    {
+      key: 'audio',
+      label: '音频',
+      detail: state.lastAudioUrl ? state.lastAudioUrl.split('/').pop() || state.lastAudioUrl : '等待 TTS / 音频下发',
+      state: stepState(audioDone, hasReply && !hasAudio),
+    },
+    {
+      key: 'done',
+      label: '完成',
+      detail: isTerminal ? formatSessionStatus(status) : '等待 turn 收尾',
+      state: stepState(finishedDone, !isSendingTurn.value && (hasStt || hasReply || hasAudio)),
+    },
+  ]
+})
+
 watch(
   () => state.lastSessionStatus,
   (nextStatus) => {
@@ -1001,6 +1056,20 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
         <span class="live-feedback-badge" :class="state.status" :title="state.status">{{ formatSessionStatus(state.status) }}</span>
       </div>
       <div class="live-feedback-main">{{ liveFeedback[0] }}</div>
+      <div class="turn-progress-track">
+        <div
+          v-for="step in turnProgressSteps"
+          :key="step.key"
+          class="turn-progress-step"
+          :class="step.state"
+        >
+          <span class="turn-progress-dot" />
+          <div class="turn-progress-meta">
+            <span class="turn-progress-label">{{ step.label }}</span>
+            <span class="turn-progress-detail">{{ step.detail }}</span>
+          </div>
+        </div>
+      </div>
       <div class="live-feedback-line">
         <span class="live-feedback-label">Turn</span>
         <span class="mono">#{{ state.currentTurn || '-' }} · {{ state.lastSessionStatus || sessionStatusLabel }}</span>
@@ -1489,6 +1558,87 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
   color: var(--text);
   line-height: 1.5;
   margin-bottom: 10px;
+}
+
+.turn-progress-track {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.turn-progress-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.turn-progress-step.done {
+  border-color: rgba(74, 222, 128, 0.4);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.turn-progress-step.active {
+  border-color: rgba(245, 158, 11, 0.55);
+  background: rgba(245, 158, 11, 0.16);
+}
+
+.turn-progress-step.pending {
+  opacity: 0.7;
+}
+
+.turn-progress-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  margin-top: 4px;
+  background: #64748b;
+  flex: none;
+}
+
+.turn-progress-step.done .turn-progress-dot {
+  background: var(--green);
+}
+
+.turn-progress-step.active .turn-progress-dot {
+  background: #f59e0b;
+  box-shadow: 0 0 0 4px rgba(245, 158, 11, 0.18);
+}
+
+.turn-progress-meta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.turn-progress-label {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.turn-progress-detail {
+  font-size: 0.68rem;
+  line-height: 1.35;
+  color: var(--text2);
+  word-break: break-word;
+}
+
+@media (max-width: 960px) {
+  .turn-progress-track {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .turn-progress-track {
+    grid-template-columns: 1fr;
+  }
 }
 
 .live-feedback-line {
