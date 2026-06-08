@@ -92,14 +92,26 @@ export interface FlowPhase {
   expanded: boolean
 }
 
+export type MonitoringConnectionStatus = 'idle' | 'connecting' | 'open' | 'reconnecting' | 'closed' | 'error'
+
+export interface MonitoringState {
+  status: MonitoringConnectionStatus
+  lastChangeAt?: string
+  lastError?: string
+}
+
 // ── 模块级单例 ──────────────────────────────────────────
 
 export const flowStore = reactive<{
   active: boolean
   phases: FlowPhase[]
+  monitoring: MonitoringState
 }>({
   active: false,
   phases: [],
+  monitoring: {
+    status: 'idle',
+  },
 })
 
 let _counter = 0
@@ -117,6 +129,16 @@ const MAX_STEPS = 100 // 单阶段最大步骤数，避免长时间测试导致�
 
 // ── 公共方法 ────────────────────────────────────────────
 
+function setMonitoringStatus(status: MonitoringConnectionStatus, error?: string) {
+  flowStore.monitoring.status = status
+  flowStore.monitoring.lastChangeAt = now()
+  if (error !== undefined) {
+    flowStore.monitoring.lastError = error
+  } else if (status !== 'error') {
+    flowStore.monitoring.lastError = ''
+  }
+}
+
 export function initFlow() {
   _counter = 0
   flowStore.active = true
@@ -133,6 +155,9 @@ export function resetFlow() {
   _counter = 0
   _processedLogCount = 0
   disconnectMonitoring()
+  flowStore.monitoring.status = 'idle'
+  flowStore.monitoring.lastChangeAt = now()
+  flowStore.monitoring.lastError = ''
 }
 
 /** 添加一个步骤（status = running）并返回其 id */
@@ -215,6 +240,7 @@ export function connectMonitoring() {
   }
 
   try {
+    setMonitoringStatus(_reconnectAttempts > 0 ? 'reconnecting' : 'connecting')
     _monitoringWS = new WebSocket(wsUrl())
 
     _monitoringWS.onmessage = (event) => {
@@ -228,17 +254,21 @@ export function connectMonitoring() {
 
     _monitoringWS.onopen = () => {
       _reconnectAttempts = 0
+      setMonitoringStatus('open')
     }
 
     _monitoringWS.onclose = () => {
       _monitoringWS = null
+      setMonitoringStatus(flowStore.active ? 'reconnecting' : 'closed')
       scheduleReconnect()
     }
 
     _monitoringWS.onerror = () => {
+      setMonitoringStatus('error', 'monitoring websocket error')
       // onclose will fire next
     }
   } catch {
+    setMonitoringStatus('error', 'monitoring websocket failed to open')
     scheduleReconnect()
   }
 }
@@ -248,6 +278,7 @@ function scheduleReconnect() {
   if (_reconnectAttempts >= MAX_RECONNECT) return
 
   _reconnectAttempts++
+  setMonitoringStatus('reconnecting')
   const delay = Math.min(2 ** _reconnectAttempts * 1000, 30000) // 指数退避 2s~30s
   _reconnectTimer = setTimeout(() => { connectMonitoring() }, delay)
 }

@@ -1,6 +1,7 @@
 import { ref, reactive } from 'vue'
 import axios from 'axios'
 import { deviceSM, DeviceState, SessionMode } from '../stores/deviceStateMachine'
+import { flowStore } from './chatFlowStore'
 
 // ── 浏览器自动播放解锁 ──────────────────────────────────────
 // 现代浏览器阻止无用户交互的音频播放。首次被阻止时注册一次性交互监听器，
@@ -1146,6 +1147,9 @@ export function useMQTTSimulation() {
     state.lastSessionStatus = undefined
     state.lastSttText = undefined
     state.lastReplyText = undefined
+    flowStore.monitoring.status = 'idle'
+    flowStore.monitoring.lastChangeAt = new Date().toTimeString().slice(0, 8)
+    flowStore.monitoring.lastError = ''
     addLog('up', 'Manual Stop', {}, 'session_end')
   }
 

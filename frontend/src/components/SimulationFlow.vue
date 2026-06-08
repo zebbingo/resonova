@@ -79,6 +79,18 @@ const flowSummary = computed(() => {
   return parts.join(' · ')
 })
 
+const monitoringStatusLabel = computed(() => {
+  const map: Record<string, string> = {
+    idle: '未连接',
+    connecting: '连接中',
+    open: '已连接',
+    reconnecting: '重连中',
+    closed: '已关闭',
+    error: '异常',
+  }
+  return map[flowStore.monitoring.status] || flowStore.monitoring.status
+})
+
 const showV16Panel = ref(true)
 const showGenerator = ref(false)
 
@@ -219,6 +231,9 @@ watch(
           {{ healthEmoji[healthStatus] }}
         </button>
         <!-- 正式状态机展示 -->
+        <span class="monitor-badge" :class="flowStore.monitoring.status" :title="flowStore.monitoring.lastChangeAt || flowStore.monitoring.status">
+          WS {{ monitoringStatusLabel }}
+        </span>
         <span
           class="sm-badge"
           :style="{ background: deviceSM.stateColor.value, color: '#fff' }"
@@ -545,6 +560,36 @@ watch(
   background: rgba(91, 141, 239, 0.12);
   padding: 1px 6px; border-radius: 4px;
   text-transform: uppercase;
+}
+
+.monitor-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  white-space: nowrap;
+  background: rgba(148, 163, 184, 0.14);
+  color: var(--text2);
+}
+
+.monitor-badge.open {
+  background: rgba(34, 197, 94, 0.16);
+  color: #4ade80;
+}
+
+.monitor-badge.connecting,
+.monitor-badge.reconnecting {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+}
+
+.monitor-badge.error {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
 }
 
 .stat {

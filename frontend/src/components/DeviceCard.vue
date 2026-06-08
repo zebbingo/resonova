@@ -306,6 +306,17 @@ function formatIntroStatus(status?: string): string {
 
 const sessionStatusLabel = computed(() => formatSessionStatus(latestSessionStatus.value || state.lastSessionStatus || state.status))
 const introStatusLabel = computed(() => formatIntroStatus(latestIntroStatus.value))
+const monitoringStatusLabel = computed(() => {
+  const map: Record<string, string> = {
+    idle: '未连接',
+    connecting: '连接中',
+    open: '已连接',
+    reconnecting: '重连中',
+    closed: '已关闭',
+    error: '异常',
+  }
+  return map[flowStore.monitoring.status] || flowStore.monitoring.status
+})
 
 const canSendTurn = computed(() => !!getCurrentAudioId() && !!state.sessionId && (isConnected.value || isSimulating.value))
 
@@ -987,6 +998,10 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
              state.status === 'completed' ? '✅ 完成' :
              state.status === 'error' ? '❌ 错误' : '未知' }}
         </span>
+        <span class="info-label" style="margin-left:12px">Monitoring</span>
+        <span class="info-value" :class="{ 'text-green': flowStore.monitoring.status === 'open', 'text-yellow': flowStore.monitoring.status === 'connecting' || flowStore.monitoring.status === 'reconnecting', 'text-red': flowStore.monitoring.status === 'error' }">
+          {{ monitoringStatusLabel }}
+        </span>
       </div>
       
       <div class="header-right">
@@ -1015,6 +1030,12 @@ async function playPreview(type: 'audio' | 'story' | 'music', id: string) {
         <span class="info-value mono">{{ state.sessionId || '-' }}</span>
         <span class="info-label" style="margin-left:12px">状态</span>
         <span class="info-value">{{ sessionStatusLabel }}</span>
+      </div>
+      <div class="info-row">
+        <span class="info-label">Monitoring</span>
+        <span class="info-value" :class="{ 'text-green': flowStore.monitoring.status === 'open', 'text-yellow': flowStore.monitoring.status === 'connecting' || flowStore.monitoring.status === 'reconnecting', 'text-red': flowStore.monitoring.status === 'error' }">
+          {{ monitoringStatusLabel }}
+        </span>
       </div>
       <div class="info-row">
         <span class="info-label">Intro</span>
